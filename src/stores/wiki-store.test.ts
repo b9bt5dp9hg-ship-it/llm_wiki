@@ -177,6 +177,7 @@ describe("wiki preview store actions", () => {
 
     useWikiStore.getState().setGraphUiState((current) => ({
       ...current,
+      visualStyle: "classic",
       colorMode: "community",
       filters: {
         ...current.filters,
@@ -190,6 +191,7 @@ describe("wiki preview store actions", () => {
     useWikiStore.getState().setActiveView("graph")
 
     const preserved = useWikiStore.getState().graphUiState
+    expect(preserved.visualStyle).toBe("classic")
     expect(preserved.colorMode).toBe("community")
     expect(preserved.filters.minLinks).toBe(2)
     expect(preserved.filters.hiddenTypes.has("source")).toBe(true)
@@ -198,6 +200,7 @@ describe("wiki preview store actions", () => {
 
     useWikiStore.getState().resetGraphUiState()
     const reset = useWikiStore.getState().graphUiState
+    expect(reset.visualStyle).toBe("neural-night")
     expect(reset.colorMode).toBe("type")
     expect(reset.filters.minLinks).toBeUndefined()
     expect(reset.filters.hiddenTypes.size).toBe(0)

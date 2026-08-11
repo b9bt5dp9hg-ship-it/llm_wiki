@@ -5,7 +5,7 @@ import "@react-sigma/core/lib/style.css"
 import type { NodeHoverDrawingFunction } from "sigma/rendering"
 import type { SigmaNodeEventPayload } from "sigma/types"
 import forceAtlas2 from "graphology-layout-forceatlas2"
-import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Layers, Tag, Lightbulb, AlertTriangle, Link2, X, Search, Loader2, Filter, RotateCcw, EyeOff } from "lucide-react"
+import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Layers, Tag, Lightbulb, AlertTriangle, Link2, X, Search, Loader2, Filter, RotateCcw, EyeOff, Sparkles } from "lucide-react"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { useResearchStore } from "@/stores/research-store"
 import { Button } from "@/components/ui/button"
@@ -21,50 +21,20 @@ import { getFileName, normalizePath } from "@/lib/path-utils"
 import { getFileCategory } from "@/lib/file-types"
 import { applyGraphFilters, hasActiveGraphFilters, type GraphFilterState } from "@/lib/graph-filters"
 import { applyGraphSearch } from "@/lib/graph-search"
+import {
+  graphCommunityColor,
+  graphEdgeStyle,
+  graphNodeColor,
+  neuralNightBloom,
+  NEURAL_NIGHT_BACKGROUND,
+  type GraphVisualStyle,
+} from "@/lib/graph-visual-style"
+import { NeuralNightOverlay } from "@/components/graph/neural-night-overlay"
 import { wikiTypeLabel } from "@/lib/wiki-page-types"
 import { useTranslation } from "react-i18next"
 
-const NODE_TYPE_COLORS: Record<string, string> = {
-  entity: "#60a5fa",    // blue-400
-  concept: "#c084fc",   // purple-400
-  source: "#fb923c",    // orange-400
-  query: "#4ade80",     // green-400
-  synthesis: "#f87171", // red-400
-  overview: "#facc15",  // yellow-400
-  comparison: "#2dd4bf", // teal-400
-  finding: "#a855f7",    // purple-500
-  thesis: "#f43f5e",     // rose-500
-  methodology: "#14b8a6", // teal-500
-  other: "#94a3b8",     // slate-400
-}
-
-const CUSTOM_NODE_COLORS = [
-  "#38bdf8",
-  "#34d399",
-  "#fbbf24",
-  "#fb7185",
-  "#a78bfa",
-  "#22d3ee",
-  "#f97316",
-  "#84cc16",
-]
-
-const COMMUNITY_COLORS = [
-  "#60a5fa",  // blue-400
-  "#4ade80",  // green-400
-  "#fb923c",  // orange-400
-  "#c084fc",  // purple-400
-  "#f87171",  // red-400
-  "#2dd4bf",  // teal-400
-  "#facc15",  // yellow-400
-  "#f472b6",  // pink-400
-  "#a78bfa",  // violet-400
-  "#38bdf8",  // sky-400
-  "#34d399",  // emerald-400
-  "#fbbf24",  // amber-400
-]
-
 type GraphThemePalette = {
+  canvasBackground: string
   defaultEdge: string
   label: string
   hoverLabelText: string
@@ -89,9 +59,25 @@ type GraphPreview = {
   content: string
 }
 
-function graphThemePalette(isDark: boolean): GraphThemePalette {
+function graphThemePalette(isDark: boolean, visualStyle: GraphVisualStyle): GraphThemePalette {
+  if (visualStyle === "neural-night") {
+    return {
+      canvasBackground: NEURAL_NIGHT_BACKGROUND,
+      defaultEdge: "rgba(34,211,238,0.2)",
+      label: "#e0f2fe",
+      hoverLabelText: "#ecfeff",
+      hoverLabelBackground: "rgba(2,12,27,0.96)",
+      hoverLabelBorder: "rgba(103,232,249,0.5)",
+      hoverLabelShadow: "rgba(6,182,212,0.5)",
+      mutedNodeMixTarget: "#102a43",
+      dimmedEdge: "rgba(8,145,178,0.08)",
+      activeEdge: "#67e8f9",
+    }
+  }
+
   return isDark
     ? {
+        canvasBackground: "var(--background)",
         defaultEdge: "rgba(100,116,139,0.18)",
         label: "#f8fafc",
         hoverLabelText: "#f8fafc",
@@ -103,6 +89,7 @@ function graphThemePalette(isDark: boolean): GraphThemePalette {
         activeEdge: "#38bdf8",
       }
     : {
+        canvasBackground: "var(--background)",
         defaultEdge: "#cbd5e1",
         label: "#1e293b",
         hoverLabelText: "#0f172a",
@@ -198,13 +185,6 @@ function useResolvedDarkMode(): boolean {
   }, [])
 
   return isDark
-}
-
-function nodeColor(type: string): string {
-  if (NODE_TYPE_COLORS[type]) return NODE_TYPE_COLORS[type]
-  let hash = 0
-  for (const char of type) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return CUSTOM_NODE_COLORS[hash % CUSTOM_NODE_COLORS.length] ?? NODE_TYPE_COLORS.other
 }
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -306,12 +286,14 @@ function GraphLoader({
   nodes,
   edges,
   colorMode,
+  visualStyle,
   nodeScale,
   graphSpacing,
 }: {
   nodes: GraphNode[]
   edges: GraphEdge[]
   colorMode: GraphColorMode
+  visualStyle: GraphVisualStyle
   nodeScale: number
   graphSpacing: number
 }) {
@@ -331,13 +313,15 @@ function GraphLoader({
     for (const node of nodes) {
       const cached = positionCache.get(node.id)
       const color = colorMode === "community"
-        ? COMMUNITY_COLORS[node.community % COMMUNITY_COLORS.length]
-        : nodeColor(node.type)
+        ? graphCommunityColor(node.community, visualStyle)
+        : graphNodeColor(node.type, visualStyle)
+      const hubStrength = Math.sqrt(node.linkCount / maxLinks)
+      const hubBoost = visualStyle === "neural-night" ? 1 + hubStrength * 0.2 : 1
       graph.addNode(node.id, {
         type: "circle",
         x: cached?.x ?? Math.random() * 100,
         y: cached?.y ?? Math.random() * 100,
-        size: nodeSize(node.linkCount, maxLinks, nodes.length, nodeScale),
+        size: nodeSize(node.linkCount, maxLinks, nodes.length, nodeScale) * hubBoost,
         color,
         label: node.label,
         nodeType: node.type,
@@ -354,13 +338,10 @@ function GraphLoader({
         const edgeKey = `${edge.source}->${edge.target}`
         if (!graph.hasEdge(edgeKey) && !graph.hasEdge(`${edge.target}->${edge.source}`)) {
           const normalizedWeight = edge.weight / maxWeight // 0..1
-          const size = 0.5 + normalizedWeight * 3.5 // 0.5..4
-          // Stronger relationships → darker color
-          const alpha = Math.round(40 + normalizedWeight * 180) // 40..220
-          const color = `rgba(100,116,139,${alpha / 255})` // slate-500 with variable opacity
+          const edgeVisual = graphEdgeStyle(normalizedWeight, visualStyle)
           graph.addEdgeWithKey(edgeKey, edge.source, edge.target, {
-            color,
-            size,
+            color: edgeVisual.color,
+            size: edgeVisual.size,
             weight: edge.weight,
             normalizedWeight,
             sourceNode: edge.source,
@@ -449,7 +430,28 @@ function GraphLoader({
       if (pendingLayoutDataKey === dataKey) pendingLayoutDataKey = ""
       worker?.terminate()
     }
-  }, [loadGraph, sigma, nodes, edges, colorMode, nodeScale, graphSpacing])
+  }, [loadGraph, sigma, nodes, edges, colorMode, visualStyle, nodeScale, graphSpacing])
+
+  return null
+}
+
+function GraphVisualEffects({ visualStyle, nodeCount }: { visualStyle: GraphVisualStyle; nodeCount: number }) {
+  const sigma = useSigma()
+
+  useEffect(() => {
+    const canvases = sigma.getCanvases()
+    const nodesCanvas = canvases.nodes
+    const edgesCanvas = canvases.edges
+    const bloom = neuralNightBloom(nodeCount)
+
+    if (nodesCanvas) nodesCanvas.style.filter = visualStyle === "neural-night" ? bloom.nodes : "none"
+    if (edgesCanvas) edgesCanvas.style.filter = visualStyle === "neural-night" ? bloom.edges : "none"
+
+    return () => {
+      if (nodesCanvas) nodesCanvas.style.filter = "none"
+      if (edgesCanvas) edgesCanvas.style.filter = "none"
+    }
+  }, [sigma, visualStyle, nodeCount])
 
   return null
 }
@@ -581,11 +583,11 @@ function clientPointFromEvent(event: MouseEvent | TouchEvent): { x: number; y: n
   return { x: touch?.clientX ?? 0, y: touch?.clientY ?? 0 }
 }
 
-function ZoomControls() {
+function ZoomControls({ visualStyle }: { visualStyle: GraphVisualStyle }) {
   const sigma = useSigma()
 
   return (
-    <div className="absolute top-3 right-3 flex flex-col gap-1">
+    <div className={`absolute top-3 right-3 flex flex-col gap-1 ${visualStyle === "neural-night" ? "neural-night-panel" : ""}`}>
       <Button
         variant="outline"
         size="icon"
@@ -630,8 +632,6 @@ export function GraphView() {
   const project = useWikiStore((s) => s.project)
   const dataVersion = useWikiStore((s) => s.dataVersion)
   const isDarkMode = useResolvedDarkMode()
-  const graphPalette = useMemo(() => graphThemePalette(isDarkMode), [isDarkMode])
-  const drawNodeHover = useMemo(() => createGraphNodeHoverRenderer(graphPalette), [graphPalette])
 
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [edges, setEdges] = useState<GraphEdge[]>([])
@@ -644,10 +644,16 @@ export function GraphView() {
   const graphUiState = useWikiStore((s) => s.graphUiState)
   const setGraphUiState = useWikiStore((s) => s.setGraphUiState)
   const resetGraphUiState = useWikiStore((s) => s.resetGraphUiState)
+  const visualStyle = graphUiState.visualStyle
   const colorMode = graphUiState.colorMode
   const filters = graphUiState.filters
   const nodeScale = graphUiState.nodeScale
   const graphSpacingDraft = graphUiState.graphSpacingDraft
+  const graphPalette = useMemo(
+    () => graphThemePalette(isDarkMode, visualStyle),
+    [isDarkMode, visualStyle],
+  )
+  const drawNodeHover = useMemo(() => createGraphNodeHoverRenderer(graphPalette), [graphPalette])
   const [showInsights, setShowInsights] = useState(false)
   const [highlightedNodes, setHighlightedNodes] = useState<Set<string>>(new Set())
   const [hoverState, setHoverState] = useState<HoverState>(null)
@@ -669,6 +675,10 @@ export function GraphView() {
 
   const setColorMode = useCallback((colorMode: GraphColorMode) => {
     setGraphUiState((prev) => ({ ...prev, colorMode }))
+  }, [setGraphUiState])
+
+  const setVisualStyle = useCallback((visualStyle: GraphVisualStyle) => {
+    setGraphUiState((prev) => ({ ...prev, visualStyle }))
   }, [setGraphUiState])
 
   const setFilters = useCallback((next: SetStateAction<GraphFilterState>) => {
@@ -1054,6 +1064,17 @@ export function GraphView() {
             </Button>
           )}
           <Button
+            variant={visualStyle === "neural-night" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => setVisualStyle(visualStyle === "neural-night" ? "classic" : "neural-night")}
+            className="text-xs gap-1 h-7"
+            aria-pressed={visualStyle === "neural-night"}
+            title="Toggle Neural Night graph style"
+          >
+            <Sparkles className="h-3 w-3" />
+            Neural Night
+          </Button>
+          <Button
             variant={colorMode === "type" ? "secondary" : "ghost"}
             size="sm"
             onClick={() => setColorMode("type")}
@@ -1101,7 +1122,8 @@ export function GraphView() {
         {/* Graph canvas */}
         <div
           ref={graphContainerRef}
-          className="relative flex-1 min-w-0 overflow-hidden bg-background"
+          className={`relative flex-1 min-w-0 overflow-hidden ${visualStyle === "neural-night" ? "neural-night-graph" : "bg-background"}`}
+          style={{ background: graphPalette.canvasBackground }}
           onContextMenu={(e) => e.preventDefault()}
           onClick={() => setNodeMenu(null)}
         >
@@ -1114,6 +1136,7 @@ export function GraphView() {
               <ErrorBoundary>
                 <SigmaContainer
                   key={sigmaKey}
+                  className={visualStyle === "neural-night" ? "neural-night-sigma" : undefined}
                   style={{ width: "100%", height: "100%", background: "transparent" }}
                   settings={{
                     defaultNodeType: "circle",
@@ -1133,6 +1156,7 @@ export function GraphView() {
                     nodes={searchedGraph.nodes}
                     edges={searchedGraph.edges}
                     colorMode={colorMode}
+                    visualStyle={visualStyle}
                     nodeScale={nodeScale}
                     graphSpacing={graphSpacing}
                   />
@@ -1147,12 +1171,16 @@ export function GraphView() {
                     nodeCount={searchedGraph.nodes.length}
                     palette={graphPalette}
                   />
-                  <ZoomControls />
+                  <GraphVisualEffects visualStyle={visualStyle} nodeCount={searchedGraph.nodes.length} />
+                  {visualStyle === "neural-night" && (
+                    <NeuralNightOverlay nodeCount={searchedGraph.nodes.length} />
+                  )}
+                  <ZoomControls visualStyle={visualStyle} />
                 </SigmaContainer>
               </ErrorBoundary>
 
               {searchedGraph.nodes.length === 0 && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-slate-50/85 text-muted-foreground backdrop-blur-[1px] dark:bg-slate-950/85">
+                <div className={`pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 text-muted-foreground backdrop-blur-[1px] ${visualStyle === "neural-night" ? "neural-night-panel bg-slate-950/85" : "bg-slate-50/85 dark:bg-slate-950/85"}`}>
                   <Search className="h-8 w-8 opacity-40" />
                   <p className="text-sm">{searchActive ? t("graph.noSearchResults") : t("graph.noVisibleNodes")}</p>
                   {searchActive && (
@@ -1171,7 +1199,7 @@ export function GraphView() {
           )}
 
           {showFilters && (
-            <div className="absolute top-3 left-3 w-72 rounded-lg border bg-background/95 p-3 text-xs shadow-lg backdrop-blur-sm">
+            <div className={`absolute top-3 left-3 w-72 rounded-lg border bg-background/95 p-3 text-xs shadow-lg backdrop-blur-sm ${visualStyle === "neural-night" ? "neural-night-panel" : ""}`}>
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-1.5 font-semibold text-foreground">
                   <Filter className="h-3.5 w-3.5" />
@@ -1351,7 +1379,7 @@ export function GraphView() {
 
           {nodeMenu && contextNode && (
             <div
-              className="absolute z-20 w-48 rounded-md border bg-background py-1 text-xs shadow-lg"
+              className={`absolute z-20 w-48 rounded-md border bg-background py-1 text-xs shadow-lg ${visualStyle === "neural-night" ? "neural-night-panel" : ""}`}
               style={{ left: nodeMenu.x, top: nodeMenu.y }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -1377,7 +1405,7 @@ export function GraphView() {
           )}
 
           {/* Legend */}
-          <div className="absolute bottom-3 left-3 rounded-lg border bg-background/90 backdrop-blur-sm px-3 py-2 text-xs shadow-sm max-w-[260px]">
+          <div className={`absolute bottom-3 left-3 rounded-lg border bg-background/90 backdrop-blur-sm px-3 py-2 text-xs shadow-sm max-w-[260px] ${visualStyle === "neural-night" ? "neural-night-panel shadow-[0_0_28px_rgba(8,145,178,0.16)]" : ""}`}>
             <div className="flex items-center justify-between mb-1.5">
               <span className="font-semibold text-foreground">
                 {colorMode === "type" ? t("graph.nodeTypesLabel") : t("graph.communitiesLabel")}
@@ -1435,8 +1463,8 @@ export function GraphView() {
                             <span
                               className="inline-block h-3 w-3 rounded-full shrink-0 shadow-sm"
                               style={{
-                                backgroundColor: isHidden ? "#94a3b8" : nodeColor(type),
-                                boxShadow: `0 0 4px ${hexToRgba(isHidden ? "#94a3b8" : nodeColor(type), 0.4)}`,
+                                backgroundColor: isHidden ? "#94a3b8" : graphNodeColor(type, visualStyle),
+                                boxShadow: `0 0 7px ${hexToRgba(isHidden ? "#94a3b8" : graphNodeColor(type, visualStyle), visualStyle === "neural-night" ? 0.7 : 0.4)}`,
                               }}
                             />
                             <span className={hoveredType === type ? "text-foreground font-medium" : "text-muted-foreground"}>
@@ -1460,8 +1488,8 @@ export function GraphView() {
                       <span
                         className="inline-block h-3 w-3 rounded-full shrink-0 shadow-sm"
                         style={{
-                          backgroundColor: COMMUNITY_COLORS[c.id % COMMUNITY_COLORS.length],
-                          boxShadow: `0 0 4px ${hexToRgba(COMMUNITY_COLORS[c.id % COMMUNITY_COLORS.length], 0.4)}`,
+                          backgroundColor: graphCommunityColor(c.id, visualStyle),
+                          boxShadow: `0 0 7px ${hexToRgba(graphCommunityColor(c.id, visualStyle), visualStyle === "neural-night" ? 0.7 : 0.4)}`,
                         }}
                       />
                       <span className="text-muted-foreground truncate" title={c.topNodes.join(", ")}>
