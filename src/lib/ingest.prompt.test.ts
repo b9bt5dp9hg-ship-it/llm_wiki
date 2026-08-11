@@ -164,6 +164,21 @@ describe("buildGenerationPrompt language directive", () => {
   })
 })
 
+describe("ingest boilerplate relevance guard", () => {
+  it("requires analysis to distinguish generic product mentions from user-specific evidence", () => {
+    const prompt = buildAnalysisPrompt("", "", "generic contract annex")
+    expect(prompt).toContain("merely mentioning it in boilerplate")
+    expect(prompt).toContain("Do not recommend standalone pages")
+    expect(prompt).toContain("signed/individualized agreement")
+  })
+
+  it("prevents generation of standalone pages for boilerplate-only items", () => {
+    const prompt = buildGenerationPrompt("", "", "", "contract.pdf")
+    expect(prompt).toContain("Separate personalized evidence from generic boilerplate")
+    expect(prompt).toContain("Do not create or update standalone entity/concept pages for boilerplate-only items")
+  })
+})
+
 describe("analysis + generation prompt consistency", () => {
   // Both stages MUST declare the same target language — otherwise the wiki
   // files generated in stage 2 may disagree with the analysis from stage 1.
