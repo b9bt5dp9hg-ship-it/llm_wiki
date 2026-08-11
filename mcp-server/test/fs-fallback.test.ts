@@ -1,0 +1,117 @@
+import assert from "node:assert/strict"
+import { test, before, after } from "node:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import {
+  buildGraphOffline,
+  listFilesOffline,
+  readFileOffline,
+  readProjectId,
+  readReviewsOffline,
+  resolveOfflineProjectPath,
+  searchOffline,
+} from "../src/fs-fallback.js"
+
+let projectDir: string
+
+before(() => {
+  projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-fallback-"))
+  fs.mkdirSync(path.join(projectDir, "wiki", "sources"), { recursive: true })
+  fs.mkdirSync(path.join(projectDir, "raw", "sources", "mail"), { recursive: true })
+  fs.mkdirSync(path.join(projectDir, ".llm-wiki"), { recursive: true })
+
+  fs.writeFileSync(path.join(projectDir, "purpose.md"), "# Purpose\n")
+  fs.writeFileSync(
+    path.join(projectDir, "wiki", "alpha.md"),
+    '---\ntitle: "Alpha Seite"\ntype: entity\n---\n\nAlpha spricht über [[beta]] und nochmal [[beta|Beta-Link]].\n',
+  )
+  fs.writeFileSync(
+    path.join(projectDir, "wiki", "beta.md"),
+    "---\ntitle: Beta\ntype: concept\n---\n\nBeta erwähnt Rechnungsstellung und Skonto.\n",
+  )
+  fs.writeFileSync(path.join(projectDir, "wiki", "sources", "mail-1.md"), "---\ntype: source\n---\n\nQuelle ohne Links.\n")
+  fs.writeFileSync(path.join(projectDir, "raw", "sources", "mail", "brief.txt"), "Rohtext")
+  fs.writeFileSync(path.join(projectDir, "raw", "sources", "mail", "scan.bin"), "binär")
+  fs.writeFileSync(path.join(projectDir, ".llm-wiki", "project.json"), JSON.stringify({ id: "proj-uuid-1" }))
+  fs.writeFileSync(path.join(projectDir, ".llm-wiki", "review.json"), JSON.stringify([
+    { type: "missing-page", title: "Offen", description: "d", resolved: false, options: [], createdAt: 1 },
+    { id: "r2", type: "duplicate", title: "Erledigt", description: "d", resolved: true, options: [], createdAt: 2 },
+  ]))
+})
+
+after(() => {
+  fs.rmSync(projectDir, { recursive: true, force: true })
+})
+
+test("resolveOfflineProjectPath prefers explicit absolute path, then env", () => {
+  assert.equal(resolveOfflineProjectPath(projectDir), projectDir)
+  const prev = process.env.LLM_WIKI_PROJECT_PATH
+  process.env.LLM_WIKI_PROJECT_PATH = projectDir
+  try {
+    assert.equal(resolveOfflineProjectPath(), projectDir)
+  } finally {
+    if (prev === undefined) delete process.env.LLM_WIKI_PROJECT_PATH
+    else process.env.LLM_WIKI_PROJECT_PATH = prev
+  }
+})
+
+test("readProjectId reads the project UUID from .llm-wiki/project.json", () => {
+  assert.equal(readProjectId(projectDir), "proj-uuid-1")
+})
+
+test("listFilesOffline lists wiki and sources roots", () => {
+  const wiki = listFilesOffline(projectDir, { root: "wiki" })
+  const paths = JSON.stringify(wiki.files)
+  assert.ok(paths.includes("wiki/alpha.md"))
+  assert.ok(paths.includes("wiki/sources"))
+  assert.ok(!paths.includes("raw/sources"))
+
+  const all = listFilesOffline(projectDir, { root: "all" })
+  assert.ok(JSON.stringify(all.files).includes("raw/sources/mail/brief.txt"))
+})
+
+test("readFileOffline enforces the allow-list", () => {
+  assert.ok(readFileOffline(projectDir, "wiki/alpha.md").content.includes("Alpha"))
+  assert.ok(readFileOffline(projectDir, "purpose.md").content.includes("Purpose"))
+  assert.throws(() => readFileOffline(projectDir, ".llm-wiki/review.json"), /not allowed/)
+  assert.throws(() => readFileOffline(projectDir, "raw/sources/mail/scan.bin"), /not allowed/)
+  assert.throws(() => readFileOffline(projectDir, "wiki/../.llm-wiki/review.json"), /not allowed/)
+})
+
+test("readReviewsOffline defaults to unresolved and backfills ids", () => {
+  const unresolved = readReviewsOffline(projectDir)
+  assert.equal(unresolved.count, 1)
+  assert.equal(unresolved.reviews[0].title, "Offen")
+  assert.equal(unresolved.reviews[0].id, "review-0")
+
+  const all = readReviewsOffline(projectDir, { status: "all" })
+  assert.equal(all.count, 2)
+})
+
+test("buildGraphOffline parses frontmatter types and wikilinks", () => {
+  const graph = buildGraphOffline(projectDir)
+  const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
+  const beta = graph.nodes.find((node) => node.id === "wiki/beta.md")
+  assert.ok(alpha && beta)
+  assert.equal(alpha.label, "Alpha Seite")
+  assert.equal(alpha.type, "entity")
+  assert.equal(beta.type, "concept")
+  assert.equal(graph.edges.length, 1)
+  assert.deepEqual(
+    [graph.edges[0].source, graph.edges[0].target].sort(),
+    ["wiki/alpha.md", "wiki/beta.md"],
+  )
+  assert.ok((alpha.linkCount ?? 0) > 0)
+})
+
+test("searchOffline scores title matches above body matches", () => {
+  const result = searchOffline(projectDir, "Beta")
+  assert.equal(result.mode, "offline-keyword")
+  assert.ok(result.results.length >= 1)
+  assert.equal(result.results[0].path, "wiki/beta.md")
+  assert.equal(result.vectorHits, 0)
+
+  const none = searchOffline(projectDir, "nichtvorhandenes-wort")
+  assert.equal(none.results.length, 0)
+})
