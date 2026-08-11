@@ -7,6 +7,7 @@ import {
   type ProjectPathIndex,
 } from "@/lib/wiki-page-resolver"
 import { DEFAULT_GRAPH_FILTERS, type GraphFilterState } from "@/lib/graph-filters"
+import type { GraphVisualStyle } from "@/lib/graph-visual-style"
 import type { OutputLanguage } from "@/lib/output-language-options"
 
 /**
@@ -241,6 +242,7 @@ export type CloseBehavior = "ask" | "minimize" | "exit"
 export type GraphColorMode = "type" | "community"
 
 export interface GraphUiState {
+  visualStyle: GraphVisualStyle
   colorMode: GraphColorMode
   filters: GraphFilterState
   nodeScale: number
@@ -249,6 +251,7 @@ export interface GraphUiState {
 
 export function createDefaultGraphUiState(): GraphUiState {
   return {
+    visualStyle: "neural-night",
     colorMode: "type",
     filters: {
       ...DEFAULT_GRAPH_FILTERS,

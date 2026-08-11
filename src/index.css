@@ -180,3 +180,49 @@
 .legend-scroll::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Neural Night keeps graph overlays readable even when the app itself uses
+   the light theme. The variables stay scoped to graph controls and panels.
+   Reference image: glassy panels rgba(10,20,40,0.55) with a thin
+   rgba(80,150,255,0.25) border and ~10px radius. */
+.neural-night-panel {
+  --background: oklch(0.15 0.045 258);
+  --foreground: oklch(0.97 0.025 210);
+  --card: oklch(0.17 0.04 250);
+  --card-foreground: oklch(0.97 0.025 210);
+  --popover: oklch(0.16 0.04 250);
+  --popover-foreground: oklch(0.97 0.025 210);
+  --secondary: oklch(0.28 0.09 262);
+  --secondary-foreground: oklch(0.97 0.025 210);
+  --muted: oklch(0.24 0.05 255);
+  --muted-foreground: oklch(0.76 0.05 235);
+  --accent: oklch(0.3 0.1 255);
+  --accent-foreground: oklch(0.97 0.025 210);
+  --border: rgba(80, 150, 255, 0.25);
+  --input: rgba(80, 150, 255, 0.3);
+  --ring: oklch(0.72 0.16 255);
+  background-color: rgba(10, 20, 40, 0.55);
+  border-color: rgba(80, 150, 255, 0.25);
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 0 24px rgba(41, 121, 255, 0.12);
+}
+
+/* Container behind the sigma canvases. The inline style paints the radial
+   night gradient (NEURAL_NIGHT_BACKGROUND); this class adds the faint blue
+   vignette from the reference image on top of it. */
+.neural-night-graph::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: inset 0 0 140px rgba(3, 8, 20, 0.85), inset 0 0 40px rgba(43, 111, 255, 0.06);
+}
+
+/* Sigma mounts its own stack of canvases; keep every layer transparent so
+   the container's night gradient stays visible behind nodes and edges. */
+.neural-night-sigma,
+.neural-night-sigma canvas {
+  background: transparent !important;
+}
