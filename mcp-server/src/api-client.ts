@@ -1,5 +1,10 @@
 export const DEFAULT_API_BASE_URL = "http://127.0.0.1:19828"
 
+/** The request never reached the app (connection refused / DNS / abort) —
+ *  as opposed to an HTTP error the app answered with. The offline
+ *  fallback keys on exactly this class. */
+export class ApiConnectionError extends Error {}
+
 export interface LlmWikiApiClientOptions {
   baseUrl?: string
   token?: string
@@ -351,7 +356,7 @@ export class LlmWikiApiClient {
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
       })
     } catch (err) {
-      throw new Error(`LLM Wiki API request failed. Is the desktop app running? ${err instanceof Error ? err.message : String(err)}`)
+      throw new ApiConnectionError(`LLM Wiki API request failed. Is the desktop app running? ${err instanceof Error ? err.message : String(err)}`)
     }
 
     const text = await response.text()

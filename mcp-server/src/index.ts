@@ -8,6 +8,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js"
 import {
+  ApiConnectionError,
   LlmWikiApiClient,
   type ApiFileNode,
   type ApiGraphNode,
@@ -19,9 +20,20 @@ import {
 } from "./api-client.js"
 import { VERSION } from "./version.js"
 import { McpProjectBinding, withActiveProject } from "./project-binding.js"
+import {
+  buildGraphOffline,
+  listFilesOffline,
+  readFileOffline,
+  readProjectId,
+  readProjectsFromAppState,
+  readReviewsOffline,
+  resolveOfflineProjectPath,
+  searchOffline,
+} from "./fs-fallback.js"
 
 const DEFAULT_PROJECT_ID = "current"
 const MAX_TEXT_BYTES = 120_000
+const OFFLINE_PREFIX = "[offline fallback — desktop app not running; served from the filesystem]\n\n"
 
 const client = new LlmWikiApiClient()
 const projectBinding = new McpProjectBinding()
@@ -191,15 +203,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (request.params.name) {
       case "llm_wiki_status": {
-        const [health, projects] = await Promise.all([
-          client.health(),
-          client.projects().catch(() => ({ projects: [], currentProject: null })),
-        ])
-        return textResult(JSON.stringify({ ...health, ...projects, sessionProject: projectBinding.project }, null, 2))
+        try {
+          const [health, projects] = await Promise.all([
+            client.health(),
+            client.projects().catch(() => ({ projects: [], currentProject: null })),
+          ])
+          return textResult(JSON.stringify({ ...health, ...projects, sessionProject: projectBinding.project, mode: "app" }, null, 2))
+        } catch (error) {
+          if (!(error instanceof ApiConnectionError)) throw error
+          const projectPath = resolveOfflineProjectPath()
+          return textResult(JSON.stringify({
+            ok: false,
+            mode: "offline-fallback",
+            desktopApp: "unreachable",
+            offlineProjectPath: projectPath,
+            offlineTools: ["llm_wiki_files", "llm_wiki_read_file", "llm_wiki_graph", "llm_wiki_reviews", "llm_wiki_search", "llm_wiki_projects"],
+            appOnlyTools: ["llm_wiki_chat", "llm_wiki_rescan_sources"],
+            sessionProject: projectBinding.project,
+          }, null, 2))
+        }
       }
       case "llm_wiki_projects": {
-        await assertMcpEnabled()
-        return textResult(JSON.stringify({ ...(await client.projects()), sessionProject: projectBinding.project }, null, 2))
+        if (await appOnline()) {
+          return textResult(JSON.stringify({ ...(await client.projects()), sessionProject: projectBinding.project }, null, 2))
+        }
+        const projects = readProjectsFromAppState()
+        return textResult(OFFLINE_PREFIX + JSON.stringify({
+          projects,
+          currentProject: projects.find((p) => p.current) ?? null,
+          sessionProject: projectBinding.project,
+        }, null, 2))
       }
       case "llm_wiki_set_project": {
         await assertMcpEnabled()
@@ -214,41 +247,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return textResult(JSON.stringify({ activeProject: pinned, pinned: true }, null, 2))
       }
       case "llm_wiki_files": {
-        await assertMcpEnabled()
-        const scope = await resolveProjectScope(args)
-        const response = await client.files(scope.id, {
+        const options = {
           root: enumArg(args.root, ["wiki", "sources", "all"] as const, "wiki"),
           recursive: boolArg(args.recursive, true),
           maxFiles: numberArg(args.max_files),
-        })
-        return textResult(withActiveProject(formatFileTree(response.files, response.truncated), scope.project, scope.id))
+        }
+        if (await appOnline()) {
+          const scope = await resolveProjectScope(args)
+          const response = await client.files(scope.id, options)
+          return textResult(withActiveProject(formatFileTree(response.files, response.truncated), scope.project, scope.id))
+        }
+        const scope = offlineScope(args)
+        const response = listFilesOffline(scope.path, options)
+        return textResult(OFFLINE_PREFIX + withActiveProject(formatFileTree(response.files, response.truncated), scope.project, scope.id))
       }
       case "llm_wiki_read_file": {
-        await assertMcpEnabled()
         const relPath = stringArg(args.path, "path")
-        const scope = await resolveProjectScope(args)
-        const { path, content } = await client.fileContent(scope.id, relPath)
-        return textResult(withActiveProject(`# ${path}\n\n${truncateText(content, MAX_TEXT_BYTES)}`, scope.project, scope.id))
+        if (await appOnline()) {
+          const scope = await resolveProjectScope(args)
+          const { path, content } = await client.fileContent(scope.id, relPath)
+          return textResult(withActiveProject(`# ${path}\n\n${truncateText(content, MAX_TEXT_BYTES)}`, scope.project, scope.id))
+        }
+        const scope = offlineScope(args)
+        const { path, content } = readFileOffline(scope.path, relPath)
+        return textResult(OFFLINE_PREFIX + withActiveProject(`# ${path}\n\n${truncateText(content, MAX_TEXT_BYTES)}`, scope.project, scope.id))
       }
       case "llm_wiki_reviews": {
-        await assertMcpEnabled()
-        const scope = await resolveProjectScope(args)
-        const reviews = await client.reviews(scope.id, {
+        const options = {
           status: enumArg(args.status, ["unresolved", "resolved", "all"] as const, "unresolved"),
           type: optionalStringArg(args.type),
           limit: numberArg(args.limit),
-        })
-        return textResult(withActiveProject(formatReviews(reviews), scope.project, scope.id))
+        }
+        if (await appOnline()) {
+          const scope = await resolveProjectScope(args)
+          const reviews = await client.reviews(scope.id, options)
+          return textResult(withActiveProject(formatReviews(reviews), scope.project, scope.id))
+        }
+        const scope = offlineScope(args)
+        const reviews = readReviewsOffline(scope.path, options)
+        return textResult(OFFLINE_PREFIX + withActiveProject(formatReviews(reviews), scope.project, scope.id))
       }
       case "llm_wiki_search": {
-        await assertMcpEnabled()
         const query = stringArg(args.query, "query")
-        const scope = await resolveProjectScope(args)
-        const search = await client.search(scope.id, query, {
-          topK: numberArg(args.top_k),
-          includeContent: boolArg(args.include_content, false),
-        })
-        return textResult(withActiveProject(formatSearchResults(query, search), scope.project, scope.id))
+        if (await appOnline()) {
+          const scope = await resolveProjectScope(args)
+          const search = await client.search(scope.id, query, {
+            topK: numberArg(args.top_k),
+            includeContent: boolArg(args.include_content, false),
+          })
+          return textResult(withActiveProject(formatSearchResults(query, search), scope.project, scope.id))
+        }
+        const scope = offlineScope(args)
+        const search = searchOffline(scope.path, query, { topK: numberArg(args.top_k) })
+        return textResult(
+          OFFLINE_PREFIX
+          + "[degraded: keyword scoring only — vector search and graph boost need the app]\n\n"
+          + withActiveProject(formatSearchResults(query, search), scope.project, scope.id),
+        )
       }
       case "llm_wiki_chat": {
         await assertMcpEnabled()
@@ -268,14 +323,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return textResult(withActiveProject(formatChatResponse(chat), scope.project, scope.id))
       }
       case "llm_wiki_graph": {
-        await assertMcpEnabled()
-        const scope = await resolveProjectScope(args)
-        const graph = await client.graph(scope.id, {
+        const options = {
           q: optionalStringArg(args.q),
           nodeType: optionalStringArg(args.node_type),
           limit: numberArg(args.limit),
-        })
-        return textResult(withActiveProject(formatGraph(graph.nodes, graph.edges), scope.project, scope.id))
+        }
+        if (await appOnline()) {
+          const scope = await resolveProjectScope(args)
+          const graph = await client.graph(scope.id, options)
+          return textResult(withActiveProject(formatGraph(graph.nodes, graph.edges), scope.project, scope.id))
+        }
+        const scope = offlineScope(args)
+        const graph = buildGraphOffline(scope.path, options)
+        return textResult(OFFLINE_PREFIX + withActiveProject(formatGraph(graph.nodes, graph.edges), scope.project, scope.id))
       }
       case "llm_wiki_rescan_sources": {
         await assertMcpEnabled()
@@ -311,6 +371,48 @@ async function assertMcpEnabled(): Promise<void> {
       "LLM Wiki MCP access is disabled. Enable Settings -> API + MCP -> Enable MCP access in the desktop app.",
     )
   }
+}
+
+/**
+ * True when the desktop app answers. A running app with MCP disabled
+ * still throws (that is a configuration problem the fallback must not
+ * paper over); only an unreachable app switches tools to the
+ * filesystem fallback.
+ */
+async function appOnline(): Promise<boolean> {
+  try {
+    await assertMcpEnabled()
+    return true
+  } catch (error) {
+    if (error instanceof ApiConnectionError) return false
+    throw error
+  }
+}
+
+function offlineScope(args: Record<string, unknown>): { path: string; id: string; project: ApiProject | null } {
+  const requested = optionalStringArg(args.project_id)
+  const pinned = projectBinding.project
+  const projectPath = resolveOfflineProjectPath(requested ?? pinned?.path)
+  if (!projectPath) {
+    throw new McpError(
+      ErrorCode.InternalError,
+      "Desktop app is not running and no offline project path could be resolved. Set LLM_WIKI_PROJECT_PATH or pass an absolute project path as project_id.",
+    )
+  }
+  const id = readProjectId(projectPath)
+  if (pinned && pinned.path !== projectPath && pinned.id !== id) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `This session is pinned to ${pinned.name} (${pinned.id}); offline access to ${projectPath} is blocked.`,
+    )
+  }
+  const project = pinned ?? {
+    id,
+    name: projectPath.split("/").filter(Boolean).pop() ?? projectPath,
+    path: projectPath,
+    current: false,
+  }
+  return { path: projectPath, id, project }
 }
 
 function textResult(text: string) {
