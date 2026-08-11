@@ -241,19 +241,22 @@ export const LLM_PRESETS: LlmPreset[] = [
     hint: "api.x.ai",
     provider: "custom",
     baseUrl: "https://api.x.ai/v1",
-    defaultModel: "grok-3",
+    // Grok 3 is a legacy/redirected generation. Default to the current
+    // 4.20 line (1M context, strict instruction following); model IDs
+    // verified against docs.x.ai — the bare "grok-4.20" alias does not
+    // exist there, only the dated -0309 variants.
+    defaultModel: "grok-4.20-0309-non-reasoning",
     apiMode: "chat_completions",
     suggestedModels: [
-      "grok-4-latest",
-      "grok-4",
-      "grok-3",
-      "grok-3-mini",
-      "grok-3-fast",
-      "grok-3-mini-fast",
-      "grok-code-fast-1",
-      "grok-2-vision-1212",
+      "grok-4.20-0309-non-reasoning",
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-multi-agent-0309",
+      "grok-4.5",
+      "grok-4.5-latest",
+      "grok-4.3",
+      "grok-build-0.1",
     ],
-    suggestedContextSize: 131072,
+    suggestedContextSize: 1000000,
   },
   {
     id: "nvidia-nim",
