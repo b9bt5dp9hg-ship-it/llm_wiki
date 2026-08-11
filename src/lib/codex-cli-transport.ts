@@ -38,9 +38,23 @@ function contentToText(content: string | ContentBlock[]): string {
   return content
     .map((block) => {
       if (block.type === "text") return block.text
-      return `[Image omitted: ${block.mediaType}]`
+      return `[Image attached: ${block.mediaType}]`
     })
     .join("\n")
+}
+
+type CodexCliImage = {
+  mediaType: string
+  dataBase64: string
+}
+
+export function collectCodexCliImages(messages: ChatMessage[]): CodexCliImage[] {
+  return messages.flatMap((message) => {
+    if (typeof message.content === "string") return []
+    return message.content
+      .filter((block): block is Extract<ContentBlock, { type: "image" }> => block.type === "image")
+      .map((block) => ({ mediaType: block.mediaType, dataBase64: block.dataBase64 }))
+  })
 }
 
 function escapePromptContent(text: string): string {
@@ -62,6 +76,7 @@ type SpawnPayload = Record<string, unknown> & {
   streamId: string
   model: string
   prompt: string
+  images: CodexCliImage[]
   isolateLocalConfig: boolean
   timeoutMinutes?: number
   workingDirectory?: string
@@ -205,6 +220,7 @@ export async function streamCodexCli(
       streamId,
       model: config.model,
       prompt: buildPrompt(messages),
+      images: collectCodexCliImages(messages),
       isolateLocalConfig: config.localCliIsolation === true,
       timeoutMinutes: config.codexCliTimeoutMinutes,
       workingDirectory,

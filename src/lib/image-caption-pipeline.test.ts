@@ -237,16 +237,26 @@ describe("captionMarkdownImages", () => {
     expect(mockReadBase64).toHaveBeenCalledWith("/custom/anchor/media/foo/img-1.png")
   })
 
-  it("skips Codex CLI captioning once before reading image bytes", async () => {
-    const out = await captionMarkdownImages("/proj", "![](/abs/a.png)\n![](/abs/b.png)", {
+  it("captions images through Codex CLI instead of skipping them", async () => {
+    mockReadBase64.mockResolvedValue({ base64: "AAAA", mimeType: "image/png" })
+    mockCaption.mockResolvedValue("codex caption")
+    const codexCfg = {
       ...cfg,
       provider: "codex-cli",
-    })
+    } as LlmConfig
+    const out = await captionMarkdownImages("/proj", "![](/abs/a.png)", codexCfg)
 
-    expect(out.enrichedMarkdown).toBe("![](/abs/a.png)\n![](/abs/b.png)")
-    expect(out.failed).toBe(2)
-    expect(mockReadBase64).not.toHaveBeenCalled()
-    expect(mockCaption).not.toHaveBeenCalled()
+    expect(out.enrichedMarkdown).toBe("![codex caption](/abs/a.png)")
+    expect(out.freshCaptions).toBe(1)
+    expect(out.failed).toBe(0)
+    expect(mockReadBase64).toHaveBeenCalledWith("/abs/a.png")
+    expect(mockCaption).toHaveBeenCalledWith(
+      "AAAA",
+      "image/png",
+      codexCfg,
+      undefined,
+      expect.objectContaining({ contextBefore: expect.any(String), contextAfter: expect.any(String) }),
+    )
   })
 
   it("forwards AbortSignal to captionImage", async () => {

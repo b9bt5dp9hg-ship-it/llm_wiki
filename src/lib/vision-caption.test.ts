@@ -142,14 +142,21 @@ describe("captionImage", () => {
     })
   })
 
-  it("rejects Codex CLI captioning because that transport omits image bytes", async () => {
-    await expect(
-      captionImage(TINY_B64, "image/png", {
-        ...cfg,
-        provider: "codex-cli",
-      }),
-    ).rejects.toThrow(/does not support image input/)
-    expect(mockStreamChat).not.toHaveBeenCalled()
+  it("forwards Codex CLI image bytes to the CLI transport", async () => {
+    mockStreamChat.mockImplementation(async (_c, _m, cb) => {
+      cb.onToken("codex caption")
+      cb.onDone()
+    })
+    const out = await captionImage(TINY_B64, "image/png", {
+      ...cfg,
+      provider: "codex-cli",
+    })
+    expect(out).toBe("codex caption")
+    expect(mockStreamChat).toHaveBeenCalledTimes(1)
+    const messages = mockStreamChat.mock.calls[0][1] as ChatMessage[]
+    expect(messages[0].content).toEqual(expect.arrayContaining([
+      { type: "image", mediaType: "image/png", dataBase64: TINY_B64 },
+    ]))
   })
 
   it("forwards the AbortSignal to streamChat (lets callers cancel batch captioning)", async () => {
