@@ -763,6 +763,27 @@ describe("ingest-queue — clearQueueState", () => {
 })
 
 describe("ingest-queue — restoreQueue", () => {
+  it("auto-resumes restored pending work when explicitly requested", async () => {
+    mockAutoIngest.mockResolvedValue([])
+    mockReadFile.mockResolvedValue(JSON.stringify([
+      {
+        id: "ingest-auto-resume",
+        sourcePath: "a.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 0,
+        error: null,
+        retryCount: 0,
+      },
+    ]))
+
+    await restoreQueue(TEST_ID, TEST_PATH, true)
+    await flushMicrotasks(4)
+
+    expect(mockAutoIngest).toHaveBeenCalled()
+    expect(getQueueSummary().paused).toBe(false)
+  })
+
   it("resets in-memory state before loading, preventing cross-project bleed", async () => {
     // Seed in-memory state from project A
     mockAutoIngest.mockImplementation(() => new Promise(() => {}))

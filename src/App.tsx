@@ -492,7 +492,10 @@ function App() {
       // may enqueue ingest tasks and require an active project queue.
       try {
         const { restoreQueue } = await import("@/lib/ingest-queue")
-        await restoreQueue(proj.id, proj.path)
+        // This local installation is configured for unattended corpus
+        // processing. Resume persisted pending tasks automatically after
+        // an app restart instead of requiring a click in the Activity panel.
+        await restoreQueue(proj.id, proj.path, true)
       } catch (err) {
         console.error("Failed to restore ingest queue:", err)
       }

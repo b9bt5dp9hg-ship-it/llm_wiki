@@ -829,6 +829,8 @@ export async function pauseQueue(): Promise<void> {
  * Load queue from disk. Called on app startup and when opening / switching
  * to a project. Restored pending tasks are hydrated but not auto-run; the
  * user can resume them from the Activity panel. New live enqueues still run.
+ * With `autoResume` restored pending tasks start immediately instead — for
+ * unattended setups where an app restart should continue the backlog.
  * `pauseQueue()` must have been called first (or the active project already
  * cleared) so that in-memory state is not contaminated from the previous
  * project.
@@ -836,6 +838,7 @@ export async function pauseQueue(): Promise<void> {
 export async function restoreQueue(
   projectId: string,
   projectPath: string,
+  autoResume = false,
 ): Promise<void> {
   queueEpoch += 1
   const pp = normalizePath(projectPath)
@@ -879,11 +882,13 @@ export async function restoreQueue(
   }
 
   queue = mine
-  restoredPausedTaskIds = new Set(
-    queue
-      .filter((t) => t.status === "pending" && !t.autoStart)
-      .map((t) => t.id),
-  )
+  restoredPausedTaskIds = autoResume
+    ? new Set()
+    : new Set(
+        queue
+          .filter((t) => t.status === "pending" && !t.autoStart)
+          .map((t) => t.id),
+      )
   await saveQueue(pp)
 
   const pending = queue.filter((t) => t.status === "pending").length
