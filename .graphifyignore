@@ -1,3 +1,25 @@
 *.min.js
 *.min.mjs
 *.min.css
+
+# graphify quality
+* 2.*
+* 2
+vendor/
+node_modules/
+dist/
+build/
+__pycache__/
+Library/
+Temp/
+* 3.ts
+* 3.tsx
+* 3.js
+* 3.jsx
+* 3.swift
+* 3.cs
+* 3.mjs
+* 4.js
+* 4.ts
+* 4.tsx
+* 4.jsx
