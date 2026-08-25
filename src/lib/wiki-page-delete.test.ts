@@ -182,6 +182,23 @@ describe("cascadeDeleteWikiPage", () => {
     expect(mockRemovePageEmbedding).toHaveBeenCalledWith("/proj", "text-only-source")
   })
 
+  it("cascades media for project-relative wiki/sources/ paths", async () => {
+    // Knowledge-tree / lint may pass wiki-relative paths. Matching only
+    // `/wiki/sources/` misses `wiki/sources/<slug>.md` and leaves
+    // wiki/media/<slug>/ behind after the page is gone.
+    await cascadeDeleteWikiPage("/proj", "wiki/sources/rope-paper.md")
+
+    expect(mockDeleteFile).toHaveBeenCalledTimes(2)
+    expect(mockDeleteFile).toHaveBeenNthCalledWith(1, "wiki/sources/rope-paper.md")
+    expect(mockDeleteFile).toHaveBeenNthCalledWith(2, "/proj/wiki/media/rope-paper")
+  })
+
+  it("does NOT cascade media for raw/sources paths that happen to contain /sources/", async () => {
+    await cascadeDeleteWikiPage("/proj", "/proj/raw/sources/paper.md")
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1)
+    expect(mockDeleteFile).toHaveBeenCalledWith("/proj/raw/sources/paper.md")
+  })
+
   it("handles Windows backslash paths in the source-page detection", async () => {
     // sources-view in some flows may pass paths that haven't been
     // normalized yet. The detector flips backslashes via

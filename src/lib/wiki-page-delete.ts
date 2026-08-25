@@ -43,11 +43,13 @@ import type { FileNode } from "@/types/wiki"
  * entities, queries, …) don't own image directories of their own,
  * so the media cascade is scoped to source pages only.
  *
- * Tolerates both `/` and `\` separators for Windows.
+ * Tolerates `/` and `\` separators, and both absolute
+ * (`…/wiki/sources/x.md`) and project-relative (`wiki/sources/x.md`)
+ * paths. Raw source files under `raw/sources/` must not match.
  */
 function isSourcePage(pagePath: string): boolean {
   const normalized = normalizePath(pagePath)
-  return normalized.includes("/wiki/sources/")
+  return normalized.includes("/wiki/sources/") || normalized.startsWith("wiki/sources/")
 }
 
 /**
