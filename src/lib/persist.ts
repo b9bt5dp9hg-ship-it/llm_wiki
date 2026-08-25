@@ -77,12 +77,30 @@ export function isSafeConversationId(id: unknown): id is string {
   return true
 }
 
+/** Case-insensitive filesystems treat `c1.json` and `C1.json` as one file. */
+export function canonicalizeConversationId(id: string): string {
+  return id.toLowerCase()
+}
+
 export function conversationChatFilePath(
   projectPath: string,
   conversationId: string,
 ): string | null {
   if (!isSafeConversationId(conversationId)) return null
-  return `${normalizePath(projectPath)}/.llm-wiki/chats/${conversationId}.json`
+  return `${normalizePath(projectPath)}/.llm-wiki/chats/${canonicalizeConversationId(conversationId)}.json`
+}
+
+function uniqueCanonicalConversations(conversations: Conversation[]): Conversation[] {
+  const seen = new Set<string>()
+  const out: Conversation[] = []
+  for (const conversation of conversations) {
+    if (!conversation || !isSafeConversationId(conversation.id)) continue
+    const id = canonicalizeConversationId(conversation.id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(conversation.id === id ? conversation : { ...conversation, id })
+  }
+  return out
 }
 
 function stripPersistedMessageImages(msg: DisplayMessage): DisplayMessage {
@@ -112,22 +130,21 @@ export async function saveChatHistory(
   const pp = normalizePath(projectPath)
   await ensureDir(pp)
 
-  const safeConversations = conversations.filter((conversation) =>
-    isSafeConversationId(conversation.id),
-  )
+  const safeConversations = uniqueCanonicalConversations(conversations)
   const keptIds = new Set(safeConversations.map((conversation) => conversation.id))
 
   // Save each conversation's messages separately
   const byConversation = new Map<string, DisplayMessage[]>()
   for (const msg of messages) {
     if (!isSafeConversationId(msg.conversationId)) continue
-    if (!keptIds.has(msg.conversationId)) continue
-    const list = byConversation.get(msg.conversationId) ?? []
+    const conversationId = canonicalizeConversationId(msg.conversationId)
+    if (!keptIds.has(conversationId)) continue
+    const list = byConversation.get(conversationId) ?? []
     // Images can be multi-megabyte base64 payloads. Keep them in memory for the
     // current chat turn, but don't persist them into chat JSON where they would
     // quickly bloat auto-save files and project backups.
-    list.push(stripPersistedMessageImages(msg))
-    byConversation.set(msg.conversationId, list)
+    list.push({ ...stripPersistedMessageImages(msg), conversationId })
+    byConversation.set(conversationId, list)
   }
 
   for (const [convId, msgs] of byConversation) {
@@ -188,11 +205,18 @@ async function pruneRemovedChatFiles(
     return
   }
 
+  const canonicalKept = new Set(
+    [...keptIds]
+      .filter((id) => isSafeConversationId(id))
+      .map((id) => canonicalizeConversationId(id)),
+  )
   for (const file of files) {
     if (file.is_dir || !file.name.toLowerCase().endsWith(".json")) continue
     const id = file.name.replace(/\.json$/i, "")
+    if (!isSafeConversationId(id)) continue
+    if (canonicalKept.has(canonicalizeConversationId(id))) continue
     const chatPath = conversationChatFilePath(projectPath, id)
-    if (!chatPath || keptIds.has(id)) continue
+    if (!chatPath) continue
     await deleteFile(chatPath)
   }
 }
@@ -203,27 +227,15 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
     // Try new format: separate files per conversation
     const convContent = await readFile(`${pp}/.llm-wiki/conversations.json`)
     const parsedConversations = JSON.parse(convContent) as Conversation[]
-    const conversations = Array.isArray(parsedConversations)
-      ? parsedConversations.filter((conversation) => isSafeConversationId(conversation?.id))
-      : []
+    const conversations = uniqueCanonicalConversations(
+      Array.isArray(parsedConversations) ? parsedConversations : [],
+    )
 
     const allMessages: DisplayMessage[] = []
     for (const conv of conversations) {
-      const chatPath = conversationChatFilePath(pp, conv.id)
-      if (!chatPath) continue
-      try {
-        const msgContent = await readFile(chatPath)
-        const msgs = JSON.parse(msgContent) as DisplayMessage[]
-        if (!Array.isArray(msgs)) continue
-        allMessages.push(
-          ...msgs.map((message) => ({
-            ...message,
-            conversationId: conv.id,
-          })),
-        )
-      } catch {
-        // Conversation file missing, skip
-      }
+      const msgs = await readConversationMessages(pp, conv.id)
+      if (!msgs) continue
+      allMessages.push(...msgs)
     }
 
     if (conversations.length > 0 || allMessages.length > 0) {
@@ -271,6 +283,25 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
   }
 }
 
+async function readConversationMessages(
+  projectPath: string,
+  conversationId: string,
+): Promise<DisplayMessage[] | null> {
+  const chatPath = conversationChatFilePath(projectPath, conversationId)
+  if (!chatPath) return null
+  try {
+    const msgContent = await readFile(chatPath)
+    const msgs = JSON.parse(msgContent) as DisplayMessage[]
+    if (!Array.isArray(msgs)) return null
+    return msgs.map((message) => ({
+      ...message,
+      conversationId: canonicalizeConversationId(conversationId),
+    }))
+  } catch {
+    return null
+  }
+}
+
 function flattenFiles(nodes: FileNode[]): FileNode[] {
   const out: FileNode[] = []
   for (const node of nodes) {
@@ -307,14 +338,18 @@ async function recoverChatHistoryFromOrphanChatFiles(projectPath: string): Promi
       .sort((a, b) => a.name.localeCompare(b.name))
     const conversations: Conversation[] = []
     const allMessages: DisplayMessage[] = []
+    const seen = new Set<string>()
 
     for (const file of files) {
       try {
         const raw = await readFile(file.path)
         const parsed = JSON.parse(raw)
         if (!Array.isArray(parsed)) continue
-        const id = file.name.replace(/\.json$/i, "")
-        if (!isSafeConversationId(id)) continue
+        const rawId = file.name.replace(/\.json$/i, "")
+        if (!isSafeConversationId(rawId)) continue
+        const id = canonicalizeConversationId(rawId)
+        if (seen.has(id)) continue
+        seen.add(id)
         const messages = (parsed as DisplayMessage[])
           .filter((message) => message && typeof message === "object")
           .map((message) => ({

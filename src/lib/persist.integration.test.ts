@@ -573,6 +573,14 @@ describe("isSafeConversationId", () => {
     expect(conversationChatFilePath("/proj", "../secrets")).toBeNull()
     expect(conversationChatFilePath("/proj", "c1")).toBe("/proj/.llm-wiki/chats/c1.json")
   })
+
+  it("maps case-variant conversation ids onto one confined chat filename", () => {
+    expect(isSafeConversationId("C1")).toBe(true)
+    expect(conversationChatFilePath("/proj", "C1")).toBe("/proj/.llm-wiki/chats/c1.json")
+    expect(conversationChatFilePath("/proj", "c1")).toBe(
+      conversationChatFilePath("/proj", "C1"),
+    )
+  })
 })
 
 describe("chat persistence — conversation id path confinement", () => {
@@ -640,6 +648,46 @@ describe("chat persistence — conversation id path confinement", () => {
     expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
     expect(loaded.messages).toHaveLength(1)
     expect(loaded.messages[0].conversationId).toBe("c1")
+  })
+
+  it("does not let case-variant conversation ids overwrite each other on disk", async () => {
+    await saveChatHistory(
+      tmp.path,
+      [makeConv("c1", "lower"), makeConv("C1", "upper")],
+      [
+        makeMsg("m-lower", "c1", "from-c1"),
+        makeMsg("m-upper", "C1", "from-C1"),
+      ],
+    )
+
+    const index = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/conversations.json`),
+    ) as Conversation[]
+    expect(index.map((conversation) => conversation.id)).toEqual(["c1"])
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages.map((message) => message.content).sort()).toEqual([
+      "from-C1",
+      "from-c1",
+    ])
+    expect(loaded.messages.every((message) => message.conversationId === "c1")).toBe(true)
+  })
+
+  it("dedupes a poisoned index that lists both c1 and C1", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/conversations.json`,
+      JSON.stringify([makeConv("c1"), makeConv("C1")]),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/c1.json`,
+      JSON.stringify([makeMsg("m1", "c1", "kept")]),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages).toHaveLength(1)
+    expect(loaded.messages[0]).toMatchObject({ conversationId: "c1", content: "kept" })
   })
 })
 

@@ -34,6 +34,13 @@ describe("discardConversation", () => {
     expect(removeFromStore).toHaveBeenCalledWith("c1")
   })
 
+  it("deletes the canonical lowercase chat file for a mixed-case id", async () => {
+    const removeFromStore = vi.fn()
+    await discardConversation("/proj", "C1", removeFromStore)
+    expect(mocks.deleteFile).toHaveBeenCalledWith("/proj/.llm-wiki/chats/c1.json")
+    expect(removeFromStore).toHaveBeenCalledWith("C1")
+  })
+
   it("drops an unsaved conversation when no chat file exists", async () => {
     mocks.fileExists.mockResolvedValue(false)
     const removeFromStore = vi.fn()
