@@ -279,6 +279,152 @@ export function readFileOffline(projectPath: string, relPath: string): { path: s
   return { path: relPath, content: fs.readFileSync(abs, "utf8") }
 }
 
+const REVIEW_TITLE_PREFIXES = [
+  "missing page",
+  "missing-page",
+  "missingpage",
+  "duplicate page",
+  "duplicate-page",
+  "duplicatepage",
+  "possible duplicate",
+  "possible-duplicate",
+  "possibleduplicate",
+  "缺失页面",
+  "缺少页面",
+  "重复页面",
+  "疑似重复",
+] as const
+
+type SanitizedReview = {
+  id?: string
+  type?: string
+  title?: string
+  description?: string
+  sourcePath?: string
+  affectedPages?: string[]
+  searchQueries?: string[]
+  options: ApiReviewItem["options"]
+  resolved: boolean
+  resolvedAction?: string
+  createdAt?: number
+}
+
+/** Same prefix-stripping contract as the desktop `/reviews` handler. */
+function normalizeReviewTitle(title: string): string {
+  const trimmed = title.trimStart()
+  const lower = trimmed.toLowerCase()
+  let rest = trimmed
+  for (const prefix of REVIEW_TITLE_PREFIXES) {
+    if (!lower.startsWith(prefix)) continue
+    const suffix = trimmed.slice(prefix.length)
+    const delimiter = suffix.charAt(0)
+    if (delimiter === ":" || delimiter === "：") {
+      rest = suffix.slice(delimiter.length).trimStart()
+      break
+    }
+  }
+  return rest.trim().split(/\s+/).join(" ").toLowerCase()
+}
+
+/** FNV-1a 32-bit over UTF-16 units, matching `review_id_for_parts` in the API. */
+function reviewIdForParts(itemType: string, title: string): string {
+  const key = `${itemType}::${normalizeReviewTitle(title)}`
+  let hash = 0x811c9dc5
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `review-${(hash >>> 0).toString(16).padStart(8, "0")}`
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.filter((entry): entry is string => typeof entry === "string")
+}
+
+function sanitizeReviewItem(item: Record<string, unknown>): SanitizedReview {
+  const id = typeof item.type === "string" && typeof item.title === "string"
+    ? reviewIdForParts(item.type, item.title)
+    : (typeof item.id === "string" ? item.id : undefined)
+  const options = Array.isArray(item.options)
+    ? item.options.flatMap((option) => {
+        if (!option || typeof option !== "object") return []
+        const record = option as Record<string, unknown>
+        const label = typeof record.label === "string" ? record.label : ""
+        const action = typeof record.action === "string" ? record.action : ""
+        if (!label && !action) return []
+        return [{ label, action }]
+      })
+    : []
+  const createdAt = typeof item.createdAt === "number" && Number.isFinite(item.createdAt)
+    ? item.createdAt
+    : undefined
+  return {
+    id,
+    type: typeof item.type === "string" ? item.type : undefined,
+    title: typeof item.title === "string" ? item.title : undefined,
+    description: typeof item.description === "string" ? item.description : undefined,
+    sourcePath: typeof item.sourcePath === "string" ? item.sourcePath : undefined,
+    affectedPages: stringList(item.affectedPages),
+    searchQueries: stringList(item.searchQueries),
+    options,
+    resolved: item.resolved === true,
+    resolvedAction: typeof item.resolvedAction === "string" ? item.resolvedAction : undefined,
+    createdAt,
+  }
+}
+
+function mergeStringList(existing: string[] | undefined, incoming: string[] | undefined): string[] | undefined {
+  const values = [...(existing ?? [])]
+  for (const value of incoming ?? []) {
+    if (!values.includes(value)) values.push(value)
+  }
+  return values.length > 0 ? values : undefined
+}
+
+function mergeSanitizedReview(existing: SanitizedReview, incoming: SanitizedReview): SanitizedReview {
+  const resolved = existing.resolved || incoming.resolved
+  const resolvedAction = resolved
+    ? (existing.resolvedAction ?? incoming.resolvedAction)
+    : undefined
+  const createdAt = existing.createdAt !== undefined && incoming.createdAt !== undefined
+    ? Math.min(existing.createdAt, incoming.createdAt)
+    : (existing.createdAt ?? incoming.createdAt)
+  const options = [...existing.options]
+  for (const option of incoming.options) {
+    if (!options.some((seen) => seen.action === option.action)) {
+      options.push(option)
+    }
+  }
+  return {
+    ...existing,
+    resolved,
+    resolvedAction,
+    description: existing.description ? existing.description : incoming.description,
+    sourcePath: existing.sourcePath ? existing.sourcePath : incoming.sourcePath,
+    affectedPages: mergeStringList(existing.affectedPages, incoming.affectedPages),
+    searchQueries: mergeStringList(existing.searchQueries, incoming.searchQueries),
+    options,
+    createdAt,
+  }
+}
+
+function toApiReviewItem(item: SanitizedReview): ApiReviewItem {
+  return {
+    id: item.id ?? "",
+    type: item.type ?? "unknown",
+    title: item.title ?? "",
+    description: item.description ?? "",
+    sourcePath: item.sourcePath,
+    affectedPages: item.affectedPages,
+    searchQueries: item.searchQueries,
+    options: item.options,
+    resolved: item.resolved,
+    resolvedAction: item.resolvedAction,
+    createdAt: item.createdAt ?? 0,
+  }
+}
+
 export function readReviewsOffline(
   projectPath: string,
   options: { status?: ApiReviewStatus; type?: string; limit?: number } = {},
@@ -308,30 +454,26 @@ export function readReviewsOffline(
     throw new Error("Invalid review state JSON: expected an array")
   }
   const items = raw as Array<Record<string, unknown>>
-  const reviews: ApiReviewItem[] = items.map((item, index) => ({
-    id: typeof item.id === "string" ? item.id : `review-${index}`,
-    type: typeof item.type === "string" ? item.type : "unknown",
-    title: typeof item.title === "string" ? item.title : "",
-    description: typeof item.description === "string" ? item.description : "",
-    sourcePath: typeof item.sourcePath === "string" ? item.sourcePath : undefined,
-    affectedPages: Array.isArray(item.affectedPages) ? item.affectedPages.filter((p): p is string => typeof p === "string") : undefined,
-    searchQueries: Array.isArray(item.searchQueries) ? item.searchQueries.filter((q): q is string => typeof q === "string") : undefined,
-    options: Array.isArray(item.options)
-      ? (item.options as Array<Record<string, unknown>>).map((o) => ({
-          label: typeof o.label === "string" ? o.label : "",
-          action: typeof o.action === "string" ? o.action : "",
-        }))
-      : [],
-    resolved: item.resolved === true,
-    resolvedAction: typeof item.resolvedAction === "string" ? item.resolvedAction : undefined,
-    createdAt: typeof item.createdAt === "number" ? item.createdAt : 0,
-  }))
-  const filtered = reviews.filter((review) => {
+  const normalized: SanitizedReview[] = []
+  const indexById = new Map<string, number>()
+  for (const item of items) {
+    const sanitized = sanitizeReviewItem(item)
+    if (sanitized.id !== undefined) {
+      const existingIdx = indexById.get(sanitized.id)
+      if (existingIdx !== undefined) {
+        normalized[existingIdx] = mergeSanitizedReview(normalized[existingIdx], sanitized)
+        continue
+      }
+      indexById.set(sanitized.id, normalized.length)
+    }
+    normalized.push(sanitized)
+  }
+  const filtered = normalized.filter((review) => {
     if (status === "unresolved" && review.resolved) return false
     if (status === "resolved" && !review.resolved) return false
     if (options.type && review.type !== options.type) return false
     return true
-  })
+  }).map(toApiReviewItem)
   const limited = options.limit ? filtered.slice(0, Math.max(1, options.limit)) : filtered
   return { status, count: limited.length, reviews: limited }
 }

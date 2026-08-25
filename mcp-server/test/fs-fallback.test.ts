@@ -139,14 +139,60 @@ test("listFilesOffline and searchOffline do not follow a wiki root symlink outsi
   }
 })
 
-test("readReviewsOffline defaults to unresolved and backfills ids", () => {
+test("readReviewsOffline defaults to unresolved and uses live-API stable ids", () => {
   const unresolved = readReviewsOffline(projectDir)
   assert.equal(unresolved.count, 1)
   assert.equal(unresolved.reviews[0].title, "Offen")
-  assert.equal(unresolved.reviews[0].id, "review-0")
+  assert.equal(unresolved.reviews[0].id, "review-40ddcb19")
 
   const all = readReviewsOffline(projectDir, { status: "all" })
   assert.equal(all.count, 2)
+})
+
+test("readReviewsOffline merges duplicate type+title items like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-dedup-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, ".llm-wiki", "review.json"),
+      JSON.stringify([
+        {
+          id: "review-old-unresolved",
+          type: "missing-page",
+          title: "Attention",
+          description: "",
+          affectedPages: ["a.md"],
+          resolved: false,
+          createdAt: 5,
+        },
+        {
+          id: "review-old-resolved",
+          type: "missing-page",
+          title: "Missing page: Attention",
+          description: "resolved copy",
+          affectedPages: ["b.md"],
+          resolved: true,
+          resolvedAction: "user-resolved",
+          createdAt: 2,
+        },
+      ]),
+    )
+
+    const unresolved = readReviewsOffline(root)
+    assert.equal(unresolved.count, 0)
+    assert.deepEqual(unresolved.reviews, [])
+
+    const all = readReviewsOffline(root, { status: "all" })
+    assert.equal(all.count, 1)
+    assert.equal(all.reviews[0].id, "review-dbdcf949")
+    assert.equal(all.reviews[0].resolved, true)
+    assert.equal(all.reviews[0].resolvedAction, "user-resolved")
+    assert.deepEqual(all.reviews[0].affectedPages, ["a.md", "b.md"])
+    assert.equal(all.reviews[0].createdAt, 2)
+    assert.equal(all.reviews[0].description, "resolved copy")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test("readReviewsOffline treats a missing review.json as an empty queue", () => {
