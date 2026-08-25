@@ -22,6 +22,7 @@ import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
 import { createReviewPageDrafts } from "@/lib/review-create-page"
 import { cleanAssistantContentForWikiSave, titleFromCleanAssistantContent } from "@/lib/chat-save-to-wiki"
+import { appendWikiIndexAndLog } from "@/lib/wiki-index-log"
 import { useTranslation } from "react-i18next"
 import { useAppDialog } from "@/stores/app-dialog-store"
 import { useResearchStore } from "@/stores/research-store"
@@ -99,24 +100,12 @@ export function ReviewView() {
         const pageContent = frontmatter + cleanContent
         await writeFile(filePath, pageContent)
 
-        // Update index
-        const indexPath = `${pp}/wiki/index.md`
-        let indexContent = ""
-        try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
         const linkTarget = fileName.replace(/\.md$/, "")
-        const entry = `- [[queries/${linkTarget}|${title}]]`
-        if (indexContent.includes("## Queries")) {
-          indexContent = indexContent.replace(/(## Queries\n)/, (match) => `${match}${entry}\n`)
-        } else {
-          indexContent = indexContent.trimEnd() + "\n\n## Queries\n" + entry + "\n"
-        }
-        await writeFile(indexPath, indexContent)
-
-        // Append log
-        const logPath = `${pp}/wiki/log.md`
-        let logContent = ""
-        try { logContent = await readFile(logPath) } catch { logContent = "# Wiki Log\n" }
-        await writeFile(logPath, logContent.trimEnd() + `\n- ${date}: Saved query page \`${fileName}\`\n`)
+        await appendWikiIndexAndLog(
+          pp,
+          [{ sectionHeader: "## Queries", line: `- [[queries/${linkTarget}|${title}]]` }],
+          `- ${date}: Saved query page \`${fileName}\``,
+        )
 
         await refreshProjectFileTree(pp, {
           projectId: project.id,
@@ -218,29 +207,20 @@ export function ReviewView() {
             created.push({ title: draft.title, dir: draft.dir, fileName, filePath, pageContent, pageType: draft.pageType, date })
           }
 
-          // Update index
-          const indexPath = `${pp}/wiki/index.md`
-          let indexContent = ""
-          try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
-          for (const createdPage of created) {
-            const sectionHeader = `## ${createdPage.dir.charAt(0).toUpperCase() + createdPage.dir.slice(1)}`
-            const linkTarget = createdPage.fileName.replace(/\.md$/, "")
-            const entry = `- [[${createdPage.dir}/${linkTarget}|${createdPage.title}]]`
-            if (indexContent.includes(sectionHeader)) {
-              indexContent = indexContent.replace(new RegExp(`(${sectionHeader}\n)`), (match) => `${match}${entry}\n`)
-            } else {
-              indexContent = indexContent.trimEnd() + `\n\n${sectionHeader}\n${entry}\n`
-            }
-          }
-          await writeFile(indexPath, indexContent)
-
-          // Log
-          const logPath = `${pp}/wiki/log.md`
-          let logContent = ""
-          try { logContent = await readFile(logPath) } catch { logContent = "# Wiki Log\n" }
           const createdNames = created.map((p) => `\`${p.fileName}\``).join(", ")
           const logDate = created[0]?.date ?? makeQueryFileName("review").date
-          await writeFile(logPath, logContent.trimEnd() + `\n- ${logDate}: Created ${created.length} page${created.length === 1 ? "" : "s"} from review: ${createdNames}\n`)
+          await appendWikiIndexAndLog(
+            pp,
+            created.map((createdPage) => {
+              const sectionHeader = `## ${createdPage.dir.charAt(0).toUpperCase() + createdPage.dir.slice(1)}`
+              const linkTarget = createdPage.fileName.replace(/\.md$/, "")
+              return {
+                sectionHeader,
+                line: `- [[${createdPage.dir}/${linkTarget}|${createdPage.title}]]`,
+              }
+            }),
+            `- ${logDate}: Created ${created.length} page${created.length === 1 ? "" : "s"} from review: ${createdNames}`,
+          )
 
           await refreshProjectFileTree(pp, {
             projectId: project.id,

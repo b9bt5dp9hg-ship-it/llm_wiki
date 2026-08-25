@@ -33,6 +33,7 @@ import { getHtmlLang, getTextDirection } from "@/lib/language-metadata"
 import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
 import { inferWikiTypeFromPath } from "@/lib/wiki-page-types"
 import { cleanAssistantContentForWikiSave, titleFromCleanAssistantContent } from "@/lib/chat-save-to-wiki"
+import { appendWikiIndexAndLog } from "@/lib/wiki-index-log"
 import type { ChatAgentEvent, ChatAgentEventStage, ChatAgentStep, ChatUserInputField, ChatUserInputRequest } from "@/lib/chat-agent-types"
 import { filterRawSourceTree } from "@/lib/source-filter"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
@@ -576,39 +577,15 @@ function SaveToWikiButton({ content, visible }: { content: string; visible: bool
 
       await writeFile(filePath, frontmatter + cleanContent)
 
-      // Update index.md — append under ## Queries section
-      const indexPath = `${pp}/wiki/index.md`
-      let indexContent = ""
-      try {
-        indexContent = await readFile(indexPath)
-      } catch {
-        indexContent = "# Wiki Index\n\n## Queries\n"
-      }
       // The wikilink target is the filename WITHOUT the `.md`
       // extension — must match `fileName` exactly (including the
       // time suffix) or the link lands on a 404.
       const linkTarget = fileName.replace(/\.md$/, "")
-      const entry = `- [[queries/${linkTarget}|${title}]]`
-      if (indexContent.includes("## Queries")) {
-        indexContent = indexContent.replace(
-          /(## Queries\n)/,
-          `$1${entry}\n`
-        )
-      } else {
-        indexContent = indexContent.trimEnd() + "\n\n## Queries\n" + entry + "\n"
-      }
-      await writeFile(indexPath, indexContent)
-
-      // Append to log.md
-      const logPath = `${pp}/wiki/log.md`
-      let logContent = ""
-      try {
-        logContent = await readFile(logPath)
-      } catch {
-        logContent = "# Wiki Log\n\n"
-      }
-      const logEntry = `- ${date}: Saved query page \`${fileName}\`\n`
-      await writeFile(logPath, logContent.trimEnd() + "\n" + logEntry)
+      await appendWikiIndexAndLog(
+        pp,
+        [{ sectionHeader: "## Queries", line: `- [[queries/${linkTarget}|${title}]]` }],
+        `- ${date}: Saved query page \`${fileName}\``,
+      )
 
       // Refresh file tree and update graph
       await refreshProjectFileTree(pp, { bumpDataVersion: true })
