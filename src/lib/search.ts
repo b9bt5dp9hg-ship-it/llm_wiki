@@ -1,10 +1,30 @@
 import { invoke } from "@tauri-apps/api/core"
 import { confinePreviewFilePath, normalizePath } from "@/lib/path-utils"
+import { imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { useWikiStore } from "@/stores/wiki-store"
 
 export interface ImageRef {
   url: string
   alt: string
+}
+
+const PASSTHROUGH_IMAGE_RE = /^(https?:|data:|blob:|tauri:)/i
+
+function confineSearchImages(projectPath: string, images: ImageRef[] | undefined): ImageRef[] {
+  if (!Array.isArray(images) || images.length === 0) return []
+  const out: ImageRef[] = []
+  const seen = new Set<string>()
+  for (const image of images) {
+    const url = typeof image?.url === "string" ? image.url.trim() : ""
+    if (!url) continue
+    const confined = PASSTHROUGH_IMAGE_RE.test(url)
+      ? url
+      : confinePreviewFilePath(projectPath, imageUrlToAbsolute(url, projectPath))
+    if (!confined || seen.has(confined)) continue
+    seen.add(confined)
+    out.push({ ...image, url: confined })
+  }
+  return out
 }
 
 export interface SearchResult {
@@ -80,7 +100,11 @@ export async function searchWiki(
   for (const result of response.results) {
     const confined = confinePreviewFilePath(pp, result.path)
     if (!confined) continue
-    results.push({ ...result, path: confined })
+    results.push({
+      ...result,
+      path: confined,
+      images: confineSearchImages(pp, result.images),
+    })
   }
   return results
 }

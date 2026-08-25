@@ -68,4 +68,13 @@ describe("raw source image resolver", () => {
       "/project/wiki/media/report/img-1.png",
     )
   })
+
+  it("promotes nested wiki-page ../media refs to wiki/media, not project/media", () => {
+    expect(imageUrlToAbsolute("../media/report/img-1.png", "/project")).toBe(
+      "/project/wiki/media/report/img-1.png",
+    )
+    expect(imageUrlToAbsolute("./media/report/img-1.png", "/project")).toBe(
+      "/project/wiki/media/report/img-1.png",
+    )
+  })
 })

@@ -105,6 +105,69 @@ describe("searchWiki backend wrapper", () => {
     ])
   })
 
+  it("canonicalizes nested wiki-page ../media image urls onto wiki/media", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      mode: "keyword",
+      tokenHits: 2,
+      vectorHits: 0,
+      results: [
+        {
+          path: "wiki/sources/report.md",
+          title: "Report",
+          snippet: "figure",
+          titleMatch: true,
+          score: 1,
+          images: [{ url: "../media/report/img-1.png", alt: "chart" }],
+        },
+        {
+          path: "wiki/concepts/attention.md",
+          title: "Attention",
+          snippet: "figure",
+          titleMatch: true,
+          score: 1,
+          images: [{ url: "media/report/img-1.png", alt: "chart" }],
+        },
+      ],
+    })
+
+    const out = await searchWiki("/tmp/project", "chart")
+
+    expect(out.map((result) => result.images.map((image) => image.url))).toEqual([
+      ["/tmp/project/wiki/media/report/img-1.png"],
+      ["/tmp/project/wiki/media/report/img-1.png"],
+    ])
+  })
+
+  it("drops search image urls that leave the project wiki or raw tree", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      mode: "keyword",
+      tokenHits: 1,
+      vectorHits: 0,
+      results: [
+        {
+          path: "wiki/concepts/attention.md",
+          title: "Attention",
+          snippet: "figure",
+          titleMatch: true,
+          score: 1,
+          images: [
+            { url: "../../.llm-wiki/secret.png", alt: "secret" },
+            { url: "/etc/passwd.png", alt: "passwd" },
+            { url: "media/report/img-1.png", alt: "chart" },
+            { url: "https://cdn.example/fig.png", alt: "remote" },
+          ],
+        },
+      ],
+    })
+
+    const out = await searchWiki("/tmp/project", "chart")
+
+    expect(out[0].images).toEqual([
+      { url: "/tmp/project/wiki/media/report/img-1.png", alt: "chart" },
+      { url: "https://cdn.example/fig.png", alt: "remote" },
+    ])
+  })
+
   it("keeps already-absolute in-project wiki paths instead of double-joining them", async () => {
     mockInvoke.mockResolvedValueOnce({
       mode: "keyword",
