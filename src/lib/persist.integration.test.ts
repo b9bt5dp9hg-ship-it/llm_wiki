@@ -557,6 +557,28 @@ describe("chat persistence — legacy format fallback", () => {
     expect(loaded.messages).toHaveLength(1)
   })
 
+  it("does not load traversal or non-canonical ids from legacy combined chat-history.json", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chat-history.json`,
+      JSON.stringify({
+        conversations: [makeConv("../secrets"), makeConv("c1"), makeConv("C1")],
+        messages: [
+          { ...makeMsg("m-bad", "../secrets"), content: "legacy-exfil" },
+          makeMsg("m-ok", "c1"),
+          { ...makeMsg("m-case", "C1"), content: "legacy-merged" },
+          { ...makeMsg("m-orphan", "../../pwned"), content: "legacy-escaped" },
+        ],
+      }),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages.map((message) => message.conversationId)).toEqual(["c1"])
+    expect(JSON.stringify(loaded)).not.toContain("legacy-exfil")
+    expect(JSON.stringify(loaded)).not.toContain("legacy-merged")
+    expect(JSON.stringify(loaded)).not.toContain("legacy-escaped")
+  })
+
   it("new format wins over legacy when both exist", async () => {
     await writeFileRaw(
       `${tmp.path}/.llm-wiki/chat-history.json`,

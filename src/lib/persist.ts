@@ -107,6 +107,22 @@ function uniqueCanonicalConversations(conversations: Conversation[]): Conversati
   return out
 }
 
+function sanitizePersistedChatData(data: Partial<PersistedChatData> | null | undefined): PersistedChatData {
+  const conversations = uniqueCanonicalConversations(
+    Array.isArray(data?.conversations) ? data.conversations : [],
+  )
+  const keptIds = new Set(conversations.map((conversation) => conversation.id))
+  const messages = Array.isArray(data?.messages)
+    ? data.messages.filter(
+        (message) =>
+          Boolean(message)
+          && isCanonicalConversationId(message.conversationId)
+          && keptIds.has(message.conversationId),
+      )
+    : []
+  return { conversations, messages }
+}
+
 function stripPersistedMessageImages(msg: DisplayMessage): DisplayMessage {
   const withoutImages = (() => {
     if (!msg.images || msg.images.length === 0) return msg
@@ -278,9 +294,10 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
         return { conversations: [defaultConv], messages: migratedMessages }
       }
 
-      // Old combined format
-      const data = parsed as PersistedChatData
-      return data
+      // Old combined format. Same id allowlist as save/load of the
+      // split files: a poisoned chat-history.json must not inject
+      // traversal or case-variant conversation ids into the store.
+      return sanitizePersistedChatData(parsed as PersistedChatData)
     } catch {
       return { conversations: [], messages: [] }
     }
