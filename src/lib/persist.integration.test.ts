@@ -25,6 +25,7 @@ import {
   saveChatPreferences,
   loadChatPreferences,
   isSafeConversationId,
+  isCanonicalConversationId,
   conversationChatFilePath,
   deletePersistedConversation,
 } from "./persist"
@@ -576,6 +577,8 @@ describe("isSafeConversationId", () => {
 
   it("maps case-variant conversation ids onto one confined chat filename", () => {
     expect(isSafeConversationId("C1")).toBe(true)
+    expect(isCanonicalConversationId("C1")).toBe(false)
+    expect(isCanonicalConversationId("c1")).toBe(true)
     expect(conversationChatFilePath("/proj", "C1")).toBe("/proj/.llm-wiki/chats/c1.json")
     expect(conversationChatFilePath("/proj", "c1")).toBe(
       conversationChatFilePath("/proj", "C1"),
@@ -667,11 +670,30 @@ describe("chat persistence — conversation id path confinement", () => {
 
     const loaded = await loadChatHistory(tmp.path)
     expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
-    expect(loaded.messages.map((message) => message.content).sort()).toEqual([
-      "from-C1",
-      "from-c1",
-    ])
-    expect(loaded.messages.every((message) => message.conversationId === "c1")).toBe(true)
+    expect(loaded.messages.map((message) => message.content)).toEqual(["from-c1"])
+    expect(JSON.stringify(loaded)).not.toContain("from-C1")
+  })
+
+  it("does not merge messages from a non-canonical C1 into c1", async () => {
+    await saveChatHistory(
+      tmp.path,
+      [makeConv("c1", "kept"), makeConv("C1", "injected")],
+      [
+        makeMsg("m-kept", "c1", "kept-body"),
+        makeMsg("m-injected", "C1", "injected-body"),
+      ],
+    )
+
+    const chatFile = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/chats/c1.json`),
+    ) as DisplayMessage[]
+    expect(chatFile.map((message) => message.content)).toEqual(["kept-body"])
+    expect(JSON.stringify(chatFile)).not.toContain("injected-body")
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([expect.objectContaining({ id: "c1", title: "kept" })])
+    expect(loaded.messages.map((message) => message.content)).toEqual(["kept-body"])
+    expect(JSON.stringify(loaded)).not.toContain("injected-body")
   })
 
   it("dedupes a poisoned index that lists both c1 and C1", async () => {

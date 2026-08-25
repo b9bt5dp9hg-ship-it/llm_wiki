@@ -82,6 +82,11 @@ export function canonicalizeConversationId(id: string): string {
   return id.toLowerCase()
 }
 
+/** Generated and persisted ids are already lowercase; mixed-case variants are not aliases. */
+export function isCanonicalConversationId(id: unknown): id is string {
+  return isSafeConversationId(id) && id === canonicalizeConversationId(id)
+}
+
 export function conversationChatFilePath(
   projectPath: string,
   conversationId: string,
@@ -94,11 +99,10 @@ function uniqueCanonicalConversations(conversations: Conversation[]): Conversati
   const seen = new Set<string>()
   const out: Conversation[] = []
   for (const conversation of conversations) {
-    if (!conversation || !isSafeConversationId(conversation.id)) continue
-    const id = canonicalizeConversationId(conversation.id)
-    if (seen.has(id)) continue
-    seen.add(id)
-    out.push(conversation.id === id ? conversation : { ...conversation, id })
+    if (!conversation || !isCanonicalConversationId(conversation.id)) continue
+    if (seen.has(conversation.id)) continue
+    seen.add(conversation.id)
+    out.push(conversation)
   }
   return out
 }
@@ -136,8 +140,8 @@ export async function saveChatHistory(
   // Save each conversation's messages separately
   const byConversation = new Map<string, DisplayMessage[]>()
   for (const msg of messages) {
-    if (!isSafeConversationId(msg.conversationId)) continue
-    const conversationId = canonicalizeConversationId(msg.conversationId)
+    if (!isCanonicalConversationId(msg.conversationId)) continue
+    const conversationId = msg.conversationId
     if (!keptIds.has(conversationId)) continue
     const list = byConversation.get(conversationId) ?? []
     // Images can be multi-megabyte base64 payloads. Keep them in memory for the
