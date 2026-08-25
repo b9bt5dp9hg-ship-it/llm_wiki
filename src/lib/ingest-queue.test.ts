@@ -225,6 +225,59 @@ describe("ingest-queue — enqueue & basic processing", () => {
     expect(queuePath).toContain(".llm-wiki/ingest-queue.json")
   })
 
+  it("rejects live enqueue whose sourcePath leaves the project", async () => {
+    mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
+
+    await expect(enqueueIngest(TEST_ID, "/etc/passwd")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+    await expect(
+      enqueueIngest(TEST_ID, "raw/sources/../../.llm-wiki/project.json"),
+    ).rejects.toThrow(/must stay inside the project/)
+    await expect(enqueueIngest(TEST_ID, "wiki/index.md")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+    await expect(enqueueIngest(TEST_ID, ".llm-wiki/project.json")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+
+    expect(getQueue()).toHaveLength(0)
+    expect(mockAutoIngest).not.toHaveBeenCalled()
+  })
+
+  it("does not persist inactive-project tasks whose sourcePath escapes the project", async () => {
+    const ids = await enqueueInactiveProjectBatch(TEST_ID_B, TEST_PATH_B, [
+      { sourcePath: "/etc/passwd", folderContext: "" },
+      { sourcePath: `${TEST_PATH_B}/wiki/index.md`, folderContext: "" },
+      { sourcePath: `${TEST_PATH_B}/raw/sources/ok.md`, folderContext: "" },
+    ])
+
+    expect(ids).toHaveLength(1)
+    const inactiveWrite = mockWriteFile.mock.calls.find(
+      ([path]) => path === `${TEST_PATH_B}/.llm-wiki/ingest-queue.json`,
+    )
+    expect(inactiveWrite).toBeDefined()
+    const persisted = JSON.parse(String(inactiveWrite?.[1])) as Array<{ sourcePath: string }>
+    expect(persisted.map((task) => task.sourcePath)).toEqual(["raw/sources/ok.md"])
+  })
+
+  it("runs live ingest from a project-relative path, never an absolute escape", async () => {
+    mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
+    await enqueueIngest(TEST_ID, `${TEST_PATH}/raw/sources/paper.pdf`)
+    await flushMicrotasks(10)
+
+    expect(mockAutoIngest).toHaveBeenCalledWith(
+      TEST_PATH,
+      `${TEST_PATH}/raw/sources/paper.pdf`,
+      expect.any(Object),
+      expect.any(AbortSignal),
+      "",
+      expect.any(Function),
+      expect.objectContaining({ runCommit: expect.any(Function) }),
+    )
+    expect(getQueue()).toHaveLength(0)
+  })
+
   it("enqueueBatch queues multiple tasks and processes them serially", async () => {
     mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
 

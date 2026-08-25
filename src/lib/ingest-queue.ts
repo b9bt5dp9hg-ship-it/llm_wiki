@@ -168,33 +168,59 @@ function normalizeSourcePathForQueue(sourcePath: string): string {
 }
 
 /**
- * Restored ingest tasks come from `.llm-wiki/ingest-queue.json`, which is
- * not a trusted writer. A poisoned file can name `wiki/`, `.llm-wiki/`,
- * or a path that walks out of the project via `..`. Live enqueue still
- * accepts watcher paths; only restore confines work to `raw/sources/`.
+ * Strip a project prefix and reject paths that leave the project tree.
+ * Live enqueue and restore both use this before applying their extra
+ * content-area rules. Absolute paths outside the project, `..`, empty
+ * segments, and control characters never become queued source paths.
  */
-function isSafeRestoredIngestSourcePath(p: string): boolean {
-  if (!p) return false
-  if (/[\x00-\x1f]/.test(p)) return false
-  if (p.startsWith("/") || p.startsWith("\\")) return false
-  if (/^[a-zA-Z]:/.test(p)) return false
-  const normalized = p.replace(/\\/g, "/")
-  if (!normalized.startsWith("raw/sources/")) return false
-  const rest = normalized.slice("raw/sources/".length)
-  if (!rest || rest.endsWith("/")) return false
-  const segments = normalized.split("/")
-  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return false
-  return true
-}
-
-function confineRestoredSourcePath(sourcePath: unknown, projectPath: string): string | null {
+function relativeIngestSourcePath(sourcePath: unknown, projectPath: string): string | null {
   if (typeof sourcePath !== "string") return null
   const normalized = normalizePath(sourcePath.trim())
   if (!normalized) return null
+  if (/[\x00-\x1f]/.test(normalized)) return null
+  const pp = normalizePath(projectPath)
   const relative = isAbsolutePath(normalized)
-    ? getRelativePath(normalized, projectPath)
+    ? getRelativePath(normalized, pp)
     : normalized
-  return isSafeRestoredIngestSourcePath(relative) ? relative : null
+  if (!relative || isAbsolutePath(relative)) return null
+  if (relative.startsWith("/") || relative.startsWith("\\") || /^[a-zA-Z]:/.test(relative)) {
+    return null
+  }
+  const posix = relative.replace(/\\/g, "/")
+  if (posix.endsWith("/")) return null
+  const segments = posix.split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return null
+  return posix
+}
+
+/**
+ * Restored ingest tasks come from `.llm-wiki/ingest-queue.json`, which is
+ * not a trusted writer. A poisoned file can name `wiki/`, `.llm-wiki/`,
+ * or a path that walks out of the project via `..`.
+ */
+function isSafeRestoredIngestSourcePath(p: string): boolean {
+  if (!p.startsWith("raw/sources/")) return false
+  const rest = p.slice("raw/sources/".length)
+  return Boolean(rest) && !rest.endsWith("/")
+}
+
+function confineRestoredSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  const relative = relativeIngestSourcePath(sourcePath, projectPath)
+  return relative && isSafeRestoredIngestSourcePath(relative) ? relative : null
+}
+
+/**
+ * Live enqueue is trusted less than a watcher path looks: clip-server,
+ * scheduled import, and UI imports can still name `/etc/passwd`, `wiki/`,
+ * or a `..` walk. Keep the task inside the project and out of wiki /
+ * `.llm-wiki`. Bare filenames remain valid for in-project sources.
+ */
+function confineLiveIngestSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  const relative = relativeIngestSourcePath(sourcePath, projectPath)
+  if (!relative) return null
+  const root = relative.split("/")[0]
+  if (root === "wiki" || root === ".llm-wiki" || root === ".obsidian") return null
+  return relative
 }
 
 function sameQueuedSourcePath(a: string, b: string): boolean {
@@ -218,10 +244,11 @@ function upsertQueuedIngestTask(
   sourcePath: string,
   folderContext: string,
 ): string {
+  const normalizedSourcePath = confineLiveIngestSourcePath(sourcePath, currentProjectPath)
+  if (!normalizedSourcePath) return ""
   if (queue.length === 0 && activeRuns.size === 0) {
     resetQueueAccounting()
   }
-  const normalizedSourcePath = normalizeSourcePathForQueue(sourcePath)
   const pendingOrStopped = queue.find((t) =>
     t.projectId === projectId &&
     (t.status === "pending" || t.status === "failed" || t.status === "cancelled") &&
@@ -316,6 +343,9 @@ export async function enqueueIngest(
   }
 
   const id = upsertQueuedIngestTask(projectId, sourcePath, folderContext)
+  if (!id) {
+    throw new Error(`enqueueIngest: source path must stay inside the project: ${sourcePath}`)
+  }
   await saveQueue(currentProjectPath)
 
   processNext(currentProjectId)
@@ -339,11 +369,13 @@ export async function enqueueBatch(
 
   const ids: string[] = []
   for (const file of files) {
-    ids.push(upsertQueuedIngestTask(projectId, file.sourcePath, file.folderContext))
+    const id = upsertQueuedIngestTask(projectId, file.sourcePath, file.folderContext)
+    if (id) ids.push(id)
   }
 
+  if (ids.length === 0) return ids
   await saveQueue(currentProjectPath)
-  console.log(`[Ingest Queue] Enqueued ${files.length} files`)
+  console.log(`[Ingest Queue] Enqueued ${ids.length} files`)
   processNext(currentProjectId)
 
   return ids
@@ -374,10 +406,8 @@ export async function enqueueInactiveProjectBatch(
     const persisted = await loadQueue(pp, projectId)
     if (currentProjectId === projectId) return
     for (const file of files) {
-      const normalizedSourcePath = normalizePath(file.sourcePath)
-      const sourcePath = normalizedSourcePath.startsWith(`${pp}/`)
-        ? normalizedSourcePath.slice(pp.length + 1)
-        : normalizedSourcePath
+      const sourcePath = confineLiveIngestSourcePath(file.sourcePath, pp)
+      if (!sourcePath) continue
       const existing = persisted.find((task) =>
         task.projectId === projectId &&
         task.status !== "done" &&
@@ -1001,9 +1031,15 @@ async function runTask(
   run: ActiveIngestRun,
   runCommit: ReturnType<IngestCommitCoordinator["reserve"]>["runCommit"],
 ): Promise<void> {
-  const fullSourcePath = isAbsolutePath(task.sourcePath)
-    ? normalizePath(task.sourcePath)
-    : `${projectPath}/${task.sourcePath}`
+  const confinedSourcePath = confineLiveIngestSourcePath(task.sourcePath, projectPath)
+  if (!confinedSourcePath) {
+    task.status = "failed"
+    task.error = "Ingest source path must stay inside the project"
+    await saveQueue(projectPath)
+    return
+  }
+  task.sourcePath = confinedSourcePath
+  const fullSourcePath = `${projectPath}/${confinedSourcePath}`
   const trackWrittenFile = (relativePath: string): void => {
     if (!run.writtenFiles.includes(relativePath)) run.writtenFiles.push(relativePath)
   }
@@ -1098,6 +1134,15 @@ async function startTask(projectId: string, task: IngestTask): Promise<boolean> 
     await saveQueue(currentProjectPath)
     return true
   }
+
+  const confinedSourcePath = confineLiveIngestSourcePath(task.sourcePath, projectPath)
+  if (!confinedSourcePath) {
+    task.status = "failed"
+    task.error = "Ingest source path must stay inside the project"
+    await saveQueue(projectPath)
+    return true
+  }
+  task.sourcePath = confinedSourcePath
 
   const llmConfig = getTaskLlmConfig("ingest")
   if (!hasUsableLlm(llmConfig)) {
