@@ -21,6 +21,7 @@
  */
 import { deleteFile, listDirectory, readFile, writeFile } from "@/commands/fs"
 import { confineWikiFilePath, getFileStem, normalizePath } from "@/lib/path-utils"
+import { withProjectLock } from "@/lib/project-mutex"
 import { removePageEmbedding } from "@/lib/embedding"
 import {
   buildDeletedKeys,
@@ -185,6 +186,13 @@ export async function cascadeDeleteWikiPagesWithRefs(
   pagePaths: readonly string[],
 ): Promise<CascadeDeleteResult> {
   const pp = normalizePath(projectPath)
+  return withProjectLock(pp, () => cascadeDeleteWikiPagesWithRefsLocked(pp, pagePaths))
+}
+
+async function cascadeDeleteWikiPagesWithRefsLocked(
+  pp: string,
+  pagePaths: readonly string[],
+): Promise<CascadeDeleteResult> {
   const result: CascadeDeleteResult = {
     deletedPaths: [],
     rewrittenFiles: 0,

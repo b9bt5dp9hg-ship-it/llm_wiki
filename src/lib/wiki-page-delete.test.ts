@@ -5,6 +5,7 @@
  * instead of having to test it at every React-component call site.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
 
 const mockDeleteFile = vi.fn<(path: string) => Promise<void>>()
 const mockRemovePageEmbedding = vi.fn<(projectPath: string, slug: string) => Promise<void>>()
@@ -25,6 +26,7 @@ vi.mock("@/lib/embedding", () => ({
 }))
 
 import { cascadeDeleteWikiPage, cascadeDeleteWikiPagesWithRefs } from "./wiki-page-delete"
+import { __resetProjectLocksForTesting } from "./project-mutex"
 import type { FileNode } from "@/types/wiki"
 
 beforeEach(() => {
@@ -37,6 +39,7 @@ beforeEach(() => {
   mockDeleteFile.mockResolvedValue(undefined)
   mockRemovePageEmbedding.mockResolvedValue(undefined)
   mockWriteFile.mockResolvedValue(undefined)
+  __resetProjectLocksForTesting()
 })
 
 describe("cascadeDeleteWikiPage", () => {
@@ -553,5 +556,57 @@ describe("cascadeDeleteWikiPagesWithRefs", () => {
     expect(mockDeleteFile).not.toHaveBeenCalledWith("/etc/passwd.md")
     expect(mockReadFile).not.toHaveBeenCalledWith("/etc/passwd.md")
     expect(mockReadFile).not.toHaveBeenCalledWith(`${PROJECT}/raw/sources/paper.md`)
+  })
+
+  it("does not restore a deleted wikilink when two cascade deletes overlap", async () => {
+    const alice = `${PROJECT}/wiki/entities/alice.md`
+    const bob = `${PROJECT}/wiki/entities/bob.md`
+    const survivor = `${PROJECT}/wiki/entities/carol.md`
+    const files = new Map<string, string>([
+      [alice, "---\ntitle: Alice\n---\n"],
+      [bob, "---\ntitle: Bob\n---\n"],
+      [survivor, "---\ntitle: Carol\n---\n\nSee [[alice]] and [[bob]].\n"],
+    ])
+    const firstSurvivorReadStarted = createDeferred<void>()
+    const releaseFirstSurvivorRead = createDeferred<void>()
+    let survivorReads = 0
+
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (path === survivor) {
+        survivorReads += 1
+        const snapshot = files.get(path) ?? ""
+        if (survivorReads === 1) {
+          firstSurvivorReadStarted.resolve()
+          await releaseFirstSurvivorRead.promise
+        }
+        return snapshot
+      }
+      const content = files.get(path)
+      if (content === undefined) throw new Error(`unexpected read ${path}`)
+      return content
+    })
+    mockWriteFile.mockImplementation(async (path: string, content: string) => {
+      files.set(path, content)
+    })
+    mockListDirectory.mockResolvedValue([
+      dirNode("wiki", [
+        dirNode("wiki/entities", [
+          fileNode("wiki/entities/alice.md"),
+          fileNode("wiki/entities/bob.md"),
+          fileNode("wiki/entities/carol.md"),
+        ]),
+      ]),
+    ])
+
+    const first = cascadeDeleteWikiPagesWithRefs(PROJECT, [alice])
+    await firstSurvivorReadStarted.promise
+    const second = cascadeDeleteWikiPagesWithRefs(PROJECT, [bob])
+    await flushMicrotasks()
+    releaseFirstSurvivorRead.resolve()
+    await Promise.all([first, second])
+
+    const written = files.get(survivor) ?? ""
+    expect(written).not.toContain("[[alice]]")
+    expect(written).not.toContain("[[bob]]")
   })
 })
