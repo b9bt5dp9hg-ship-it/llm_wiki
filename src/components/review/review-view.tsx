@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button"
 import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { writeFile, readFile, deleteFile } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
+import { confineWikiFilePath, normalizePath } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
@@ -152,8 +152,13 @@ export function ReviewView() {
         }
       }
     } else if (action.startsWith("delete:") && project) {
-      // Delete a file
-      const filePath = action.slice(7)
+      // Persisted review.json can name an arbitrary delete: path. Collapse
+      // `..` and refuse anything that is not a markdown file under wiki/.
+      const filePath = confineWikiFilePath(pp, action.slice("delete:".length))
+      if (!filePath) {
+        resolveItem(id, "Delete failed")
+        return
+      }
       try {
         await deleteFile(filePath)
         await refreshProjectFileTree(pp, {

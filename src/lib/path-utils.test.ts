@@ -6,6 +6,7 @@ import {
   getFileStem,
   getRelativePath,
   isAbsolutePath,
+  confineWikiFilePath,
 } from "./path-utils"
 
 describe("normalizePath", () => {
@@ -167,5 +168,48 @@ describe("isAbsolutePath", () => {
   it("rejects drive-letter WITHOUT a separator (ambiguous)", () => {
     // "C:foo" is a Windows drive-relative path, not absolute.
     expect(isAbsolutePath("C:foo")).toBe(false)
+  })
+})
+
+describe("confineWikiFilePath", () => {
+  const PROJECT = "/Users/me/MyWiki"
+
+  it("accepts an in-wiki markdown path, absolute or wiki-relative", () => {
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki/entities/foo.md`)).toBe(
+      `${PROJECT}/wiki/entities/foo.md`,
+    )
+    expect(confineWikiFilePath(PROJECT, "entities/foo.md")).toBe(
+      `${PROJECT}/wiki/entities/foo.md`,
+    )
+  })
+
+  it("rejects a delete target outside the project", () => {
+    expect(confineWikiFilePath(PROJECT, "/etc/passwd")).toBeNull()
+    expect(confineWikiFilePath(PROJECT, "/etc/passwd.md")).toBeNull()
+  })
+
+  it("rejects a path that shares the project prefix but climbs out via ..", () => {
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki/../.llm-wiki/project.json`)).toBeNull()
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki/../../.ssh/id_rsa.md`)).toBeNull()
+    expect(confineWikiFilePath(PROJECT, "concepts/../../../etc/passwd.md")).toBeNull()
+  })
+
+  it("rejects a sibling directory that only shares the wiki prefix", () => {
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki-secret/foo.md`)).toBeNull()
+  })
+
+  it("rejects the wiki root and extension-less directory targets", () => {
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki`)).toBeNull()
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki/entities`)).toBeNull()
+    expect(confineWikiFilePath(PROJECT, `${PROJECT}/wiki/media/slug`)).toBeNull()
+  })
+
+  it("accepts an in-wiki Windows path and rejects a drive-letter escape", () => {
+    expect(
+      confineWikiFilePath("C:/Users/me/MyWiki", "C:/Users/me/MyWiki/wiki/queries/a.md"),
+    ).toBe("C:/Users/me/MyWiki/wiki/queries/a.md")
+    expect(
+      confineWikiFilePath("C:/Users/me/MyWiki", "C:/Users/me/MyWiki/wiki/../.llm-wiki/project.json"),
+    ).toBeNull()
   })
 })

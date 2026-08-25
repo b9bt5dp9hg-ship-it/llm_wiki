@@ -75,3 +75,61 @@ export function isAbsolutePath(p: string): boolean {
   if (p.startsWith("\\\\") || p.startsWith("//")) return true
   return false
 }
+
+/**
+ * Collapse `.` and `..` lexically without touching the filesystem.
+ * Absolute paths clamp at the root; relative paths may keep a leading `..`.
+ */
+export function collapsePathSegments(p: string): string {
+  const normalized = normalizePath(p)
+  if (!normalized) return ""
+  const drive = /^[A-Za-z]:/.exec(normalized)?.[0] ?? ""
+  const body = drive ? normalized.slice(drive.length) : normalized
+  const isAbsolute = body.startsWith("/") || normalized.startsWith("//")
+  const out: string[] = []
+  for (const seg of body.split("/")) {
+    if (seg === "" || seg === ".") continue
+    if (seg === "..") {
+      if (out.length > 0) out.pop()
+      else if (!isAbsolute) out.push("..")
+    } else {
+      out.push(seg)
+    }
+  }
+  const joined = out.join("/")
+  if (drive) return `${drive}/${joined}`
+  if (normalized.startsWith("//")) return `//${joined}`
+  if (body.startsWith("/")) return `/${joined}`
+  return joined
+}
+
+function isPathInsideRoot(candidate: string, root: string): boolean {
+  const collapsedCandidate = collapsePathSegments(candidate)
+  const collapsedRoot = collapsePathSegments(root).replace(/\/+$/, "")
+  const candidateKey = caseFoldPath(collapsedCandidate)
+  const rootKey = caseFoldPath(collapsedRoot)
+  return candidateKey === rootKey || candidateKey.startsWith(`${rootKey}/`)
+}
+
+/**
+ * Resolve a wiki file path so review/lint actions cannot leave `<project>/wiki/`.
+ * Relative targets are joined under `wiki/`. After collapsing `..`, the result
+ * must be a markdown file strictly inside that directory — not the wiki root
+ * and not an extension-less directory that `delete_file` would remove recursively.
+ */
+export function confineWikiFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const wikiRoot = `${project}/wiki`
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : `${wikiRoot}/${raw}`
+  const collapsed = collapsePathSegments(absolute)
+  if (!isPathInsideRoot(collapsed, wikiRoot)) return null
+  if (caseFoldPath(collapsePathSegments(wikiRoot)) === caseFoldPath(collapsed)) return null
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === ".." || !/\.md$/i.test(name)) return null
+  return collapsed
+}
