@@ -268,13 +268,27 @@ export function readReviewsOffline(
   // Confine before parse: a review.json or .llm-wiki symlink can otherwise
   // leak another project's queue into this MCP session.
   const reviewPath = safeJoinOffline(projectPath, ".llm-wiki/review.json")
-  let items: Array<Record<string, unknown>> = []
+  let rawText: string
   try {
-    const raw = JSON.parse(fs.readFileSync(reviewPath, "utf8"))
-    if (Array.isArray(raw)) items = raw as Array<Record<string, unknown>>
-  } catch {
-    items = []
+    rawText = fs.readFileSync(reviewPath, "utf8")
+  } catch (err) {
+    // Missing file is an empty queue, matching the desktop API.
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status, count: 0, reviews: [] }
+    }
+    throw err
   }
+  let raw: unknown
+  try {
+    raw = JSON.parse(rawText)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    throw new Error(`Invalid review state JSON: ${detail}`)
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error("Invalid review state JSON: expected an array")
+  }
+  const items = raw as Array<Record<string, unknown>>
   const reviews: ApiReviewItem[] = items.map((item, index) => ({
     id: typeof item.id === "string" ? item.id : `review-${index}`,
     type: typeof item.type === "string" ? item.type : "unknown",

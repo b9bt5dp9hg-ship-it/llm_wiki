@@ -148,6 +148,49 @@ test("readReviewsOffline defaults to unresolved and backfills ids", () => {
   assert.equal(all.count, 2)
 })
 
+test("readReviewsOffline treats a missing review.json as an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-missing-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const missing = readReviewsOffline(root)
+    assert.equal(missing.count, 0)
+    assert.deepEqual(missing.reviews, [])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline rejects invalid review.json instead of reporting an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-invalid-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(root, ".llm-wiki", "review.json"), "{not valid json")
+    assert.throws(
+      () => readReviewsOffline(root),
+      /Invalid review state JSON/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline rejects a non-array review.json instead of reporting an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-object-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, ".llm-wiki", "review.json"),
+      JSON.stringify({ reviews: [{ title: "Hidden" }] }),
+    )
+    assert.throws(
+      () => readReviewsOffline(root),
+      /Invalid review state JSON: expected an array/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("readReviewsOffline refuses a review.json symlink that points outside the project", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-file-link-"))
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-secret-"))
