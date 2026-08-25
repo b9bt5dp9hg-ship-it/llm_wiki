@@ -25,7 +25,7 @@ import { readFile, listDirectory } from "@/commands/fs"
 import { invoke } from "@tauri-apps/api/core"
 import type { EmbeddingConfig } from "@/stores/wiki-store"
 import type { FileNode } from "@/types/wiki"
-import { normalizePath } from "@/lib/path-utils"
+import { getRelativePath, normalizePath } from "@/lib/path-utils"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
 import { parseFrontmatter } from "@/lib/frontmatter"
 
@@ -460,6 +460,13 @@ function displayProjectRelativePath(projectPath: string, filePath: string): stri
   return file.startsWith(prefix) ? file.slice(prefix.length) : file
 }
 
+const RESERVED_WIKI_ROOT_STEMS = new Set(["index", "log", "overview", "purpose", "schema"])
+
+function isReservedWikiRootPage(projectPath: string, filePath: string, stem: string): boolean {
+  if (!RESERVED_WIKI_ROOT_STEMS.has(stem)) return false
+  return getRelativePath(filePath, projectPath) === `wiki/${stem}.md`
+}
+
 function collectDuplicatePageStems(
   files: { id: string; path: string }[],
 ): Array<{ id: string; paths: string[] }> {
@@ -539,7 +546,9 @@ async function preparePageEmbeddingRowsWithRetry(
  * Embed every wiki content page that isn't already indexed (or re-embed
  * all when `force === true`). Driven from Settings → Embedding or on
  * first enable. Skips structural pages (index / log / overview /
- * purpose / schema) — they're aggregate views, not retrieval targets.
+ * purpose / schema) only at the wiki root — they're aggregate views,
+ * not retrieval targets. Nested pages with the same filename remain
+ * indexable.
  */
 export async function embedAllPages(
   projectPath: string,
@@ -573,7 +582,7 @@ export async function embedAllPages(
         walk(node.children)
       } else if (!node.is_dir && node.name.endsWith(".md")) {
         const id = node.name.replace(/\.md$/, "")
-        if (!["index", "log", "overview", "purpose", "schema"].includes(id)) {
+        if (!isReservedWikiRootPage(pp, node.path, id)) {
           mdFiles.push({ id, path: node.path })
         }
       }
