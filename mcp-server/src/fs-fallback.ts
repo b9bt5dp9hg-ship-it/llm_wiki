@@ -33,24 +33,68 @@ export function defaultAppStatePath(): string {
   return path.join(os.homedir(), "Library", "Application Support", "com.llmwiki.app", "app-state.json")
 }
 
-/**
- * Resolve the project directory without the app. Order: an explicit
- * absolute path argument, the LLM_WIKI_PROJECT_PATH env var, then the
- * last project recorded in app-state.json (hand-written files are
- * explicitly supported by the app's API server too).
- */
-export function resolveOfflineProjectPath(explicit?: string): string | null {
-  const candidates: Array<string | undefined> = [
-    explicit && path.isAbsolute(explicit) ? explicit : undefined,
-    process.env.LLM_WIKI_PROJECT_PATH,
-  ]
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate
+function normalizeProjectPath(projectPath: string): string {
+  return projectPath.replace(/\\/g, "/").replace(/\/+$/, "")
+}
+
+function projectDirExists(projectPath: string): boolean {
+  try {
+    return fs.statSync(projectPath).isDirectory()
+  } catch {
+    return false
   }
-  const registry = readProjectsFromAppState()
-  const last = registry.find((p) => p.current) ?? registry[0]
-  if (last && fs.existsSync(last.path)) return last.path
+}
+
+function fromPath(projectPath: string, id?: string, name?: string, current = false): ApiProject {
+  const normalized = normalizeProjectPath(projectPath)
+  return {
+    id: id && id.trim() ? id : readProjectId(normalized),
+    name: (name && name.trim()) || path.basename(normalized),
+    path: projectPath,
+    current,
+  }
+}
+
+/**
+ * Resolve a project without the app, matching the desktop API contract:
+ * UUID, filesystem path, or "current". An explicit unknown id must not
+ * fall through to lastProject / LLM_WIKI_PROJECT_PATH — that would search
+ * the wrong wiki. Defaults (omitted / "current") still use env, then
+ * lastProject, then the first registry entry.
+ */
+export function findOfflineProject(requested?: string): ApiProject | null {
+  const projects = readProjectsFromAppState()
+  const needle = requested?.trim() ?? ""
+  const isDefault = needle === "" || needle.toLowerCase() === "current"
+
+  if (!isDefault) {
+    const normalizedNeedle = normalizeProjectPath(needle)
+    const match = projects.find((project) => (
+      project.id === needle
+      || project.path === needle
+      || normalizeProjectPath(project.path) === normalizedNeedle
+    ))
+    if (match && projectDirExists(match.path)) return match
+    if (path.isAbsolute(needle) && projectDirExists(needle)) {
+      return fromPath(needle)
+    }
+    return null
+  }
+
+  const env = process.env.LLM_WIKI_PROJECT_PATH
+  if (env && projectDirExists(env)) {
+    const normalized = normalizeProjectPath(env)
+    return projects.find((project) => normalizeProjectPath(project.path) === normalized)
+      ?? fromPath(env)
+  }
+
+  const last = projects.find((project) => project.current) ?? projects[0]
+  if (last && projectDirExists(last.path)) return last
   return null
+}
+
+export function resolveOfflineProjectPath(explicit?: string): string | null {
+  return findOfflineProject(explicit)?.path ?? null
 }
 
 export function readProjectsFromAppState(): ApiProject[] {
@@ -58,17 +102,35 @@ export function readProjectsFromAppState(): ApiProject[] {
     const raw = JSON.parse(fs.readFileSync(defaultAppStatePath(), "utf8")) as Record<string, unknown>
     const lastProject = raw.lastProject as { id?: string; name?: string; path?: string } | undefined
     const registry = raw.projectRegistry as Record<string, { id?: string; name?: string; path?: string }> | undefined
-    const projects: ApiProject[] = []
-    for (const entry of Object.values(registry ?? {})) {
-      if (!entry?.path) continue
-      projects.push({
-        id: entry.id ?? entry.path,
-        name: entry.name ?? path.basename(entry.path),
-        path: entry.path,
-        current: lastProject?.path === entry.path,
-      })
+    const recents = raw.recentProjects as Array<{ id?: string; name?: string; path?: string }> | undefined
+    const byPath = new Map<string, ApiProject>()
+    const lastPath = lastProject?.path ? normalizeProjectPath(lastProject.path) : ""
+
+    const add = (id: string, name: string | undefined, projectPath: string) => {
+      if (!projectPath) return
+      const normalized = normalizeProjectPath(projectPath)
+      if (!normalized || byPath.has(normalized)) return
+      byPath.set(normalized, fromPath(projectPath, id, name, lastPath === normalized))
     }
-    return projects
+
+    for (const [key, entry] of Object.entries(registry ?? {})) {
+      if (!entry?.path) continue
+      add(typeof entry.id === "string" && entry.id ? entry.id : key, entry.name, entry.path)
+    }
+    if (Array.isArray(recents)) {
+      for (const entry of recents) {
+        if (!entry?.path) continue
+        add(typeof entry.id === "string" && entry.id ? entry.id : readProjectId(entry.path), entry.name, entry.path)
+      }
+    }
+    if (lastProject?.path) {
+      add(
+        typeof lastProject.id === "string" && lastProject.id ? lastProject.id : readProjectId(lastProject.path),
+        lastProject.name,
+        lastProject.path,
+      )
+    }
+    return [...byPath.values()]
   } catch {
     return []
   }

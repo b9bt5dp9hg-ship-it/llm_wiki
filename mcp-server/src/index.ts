@@ -22,9 +22,9 @@ import { VERSION } from "./version.js"
 import { McpProjectBinding, withActiveProject } from "./project-binding.js"
 import {
   buildGraphOffline,
+  findOfflineProject,
   listFilesOffline,
   readFileOffline,
-  readProjectId,
   readProjectsFromAppState,
   readReviewsOffline,
   resolveOfflineProjectPath,
@@ -235,16 +235,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }, null, 2))
       }
       case "llm_wiki_set_project": {
-        await assertMcpEnabled()
         const requested = stringArg(args.project_id, "project_id")
-        const projects = await client.projects()
-        let pinned: ApiProject
-        try {
-          pinned = projectBinding.pin(requested, projects.projects, projects.currentProject)
-        } catch (error) {
-          throw new McpError(ErrorCode.InvalidParams, scopedErrorMessage(error))
+        if (await appOnline()) {
+          const projects = await client.projects()
+          let pinned: ApiProject
+          try {
+            pinned = projectBinding.pin(requested, projects.projects, projects.currentProject)
+          } catch (error) {
+            throw new McpError(ErrorCode.InvalidParams, scopedErrorMessage(error))
+          }
+          return textResult(JSON.stringify({ activeProject: pinned, pinned: true }, null, 2))
         }
-        return textResult(JSON.stringify({ activeProject: pinned, pinned: true }, null, 2))
+        const found = findOfflineProject(requested)
+        if (!found) {
+          throw new McpError(ErrorCode.InvalidParams, `Unknown LLM Wiki project: ${requested}`)
+        }
+        const pinned = projectBinding.pin(found.id, [found], found)
+        return textResult(OFFLINE_PREFIX + JSON.stringify({
+          activeProject: pinned,
+          pinned: true,
+          mode: "offline-fallback",
+        }, null, 2))
       }
       case "llm_wiki_files": {
         const options = {
@@ -392,27 +403,30 @@ async function appOnline(): Promise<boolean> {
 function offlineScope(args: Record<string, unknown>): { path: string; id: string; project: ApiProject | null } {
   const requested = optionalStringArg(args.project_id)
   const pinned = projectBinding.project
-  const projectPath = resolveOfflineProjectPath(requested ?? pinned?.path)
-  if (!projectPath) {
+  if (pinned) {
+    if (
+      requested
+      && requested !== "current"
+      && requested !== pinned.id
+      && requested !== pinned.path
+    ) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `This session is pinned to ${pinned.name} (${pinned.id}); offline access to ${requested} is blocked.`,
+      )
+    }
+    return { path: pinned.path, id: pinned.id, project: pinned }
+  }
+  const found = findOfflineProject(requested)
+  if (!found) {
     throw new McpError(
-      ErrorCode.InternalError,
-      "Desktop app is not running and no offline project path could be resolved. Set LLM_WIKI_PROJECT_PATH or pass an absolute project path as project_id.",
+      requested ? ErrorCode.InvalidParams : ErrorCode.InternalError,
+      requested
+        ? `Unknown LLM Wiki project: ${requested}`
+        : "Desktop app is not running and no offline project path could be resolved. Set LLM_WIKI_PROJECT_PATH or pass an absolute project path as project_id.",
     )
   }
-  const id = readProjectId(projectPath)
-  if (pinned && pinned.path !== projectPath && pinned.id !== id) {
-    throw new McpError(
-      ErrorCode.InvalidParams,
-      `This session is pinned to ${pinned.name} (${pinned.id}); offline access to ${projectPath} is blocked.`,
-    )
-  }
-  const project = pinned ?? {
-    id,
-    name: projectPath.split("/").filter(Boolean).pop() ?? projectPath,
-    path: projectPath,
-    current: false,
-  }
-  return { path: projectPath, id, project }
+  return { path: found.path, id: found.id, project: found }
 }
 
 function textResult(text: string) {

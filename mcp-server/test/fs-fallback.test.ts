@@ -5,9 +5,11 @@ import os from "node:os"
 import path from "node:path"
 import {
   buildGraphOffline,
+  findOfflineProject,
   listFilesOffline,
   readFileOffline,
   readProjectId,
+  readProjectsFromAppState,
   readReviewsOffline,
   resolveOfflineProjectPath,
   searchOffline,
@@ -114,4 +116,93 @@ test("searchOffline scores title matches above body matches", () => {
 
   const none = searchOffline(projectDir, "nichtvorhandenes-wort")
   assert.equal(none.results.length, 0)
+})
+
+function withAppState<T>(state: unknown, fn: () => T): T {
+  const prevState = process.env.LLM_WIKI_APP_STATE
+  const prevProject = process.env.LLM_WIKI_PROJECT_PATH
+  const statePath = path.join(os.tmpdir(), `llm-wiki-app-state-${process.pid}-${Date.now()}.json`)
+  fs.writeFileSync(statePath, JSON.stringify(state))
+  process.env.LLM_WIKI_APP_STATE = statePath
+  delete process.env.LLM_WIKI_PROJECT_PATH
+  try {
+    return fn()
+  } finally {
+    fs.rmSync(statePath, { force: true })
+    if (prevState === undefined) delete process.env.LLM_WIKI_APP_STATE
+    else process.env.LLM_WIKI_APP_STATE = prevState
+    if (prevProject === undefined) delete process.env.LLM_WIKI_PROJECT_PATH
+    else process.env.LLM_WIKI_PROJECT_PATH = prevProject
+  }
+}
+
+test("resolveOfflineProjectPath maps a registry UUID to that project, not lastProject", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const beta = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-beta-"))
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+        "bbbb-bbbb": { id: "bbbb-bbbb", name: "Beta", path: beta, lastOpened: 2 },
+      },
+    }, () => {
+      assert.equal(resolveOfflineProjectPath("bbbb-bbbb"), beta)
+      assert.equal(resolveOfflineProjectPath("aaaa-aaaa"), alpha)
+      assert.equal(resolveOfflineProjectPath("current"), alpha)
+      const found = findOfflineProject("bbbb-bbbb")
+      assert.equal(found?.id, "bbbb-bbbb")
+      assert.equal(found?.name, "Beta")
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(beta, { recursive: true, force: true })
+  }
+})
+
+test("unknown project UUID does not silently fall through to lastProject or env", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const envDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-env-"))
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = envDir
+      assert.equal(resolveOfflineProjectPath("missing-uuid"), null)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(envDir, { recursive: true, force: true })
+  }
+})
+
+test("readProjectsFromAppState uses the registry key as id and includes recentProjects", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const gamma = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-gamma-"))
+  try {
+    fs.mkdirSync(path.join(gamma, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(gamma, ".llm-wiki", "project.json"), JSON.stringify({ id: "gggg-gggg" }))
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+      recentProjects: [
+        { name: "Gamma", path: gamma },
+      ],
+    }, () => {
+      const projects = readProjectsFromAppState()
+      const byId = Object.fromEntries(projects.map((p) => [p.id, p]))
+      assert.equal(byId["aaaa-aaaa"]?.path, alpha)
+      assert.equal(byId["aaaa-aaaa"]?.current, true)
+      assert.equal(byId["gggg-gggg"]?.path, gamma)
+      assert.equal(resolveOfflineProjectPath("gggg-gggg"), gamma)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(gamma, { recursive: true, force: true })
+  }
 })
