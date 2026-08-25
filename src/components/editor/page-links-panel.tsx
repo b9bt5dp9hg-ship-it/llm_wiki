@@ -111,7 +111,7 @@ export function PageLinksPanel({ filePath, onClose }: { filePath: string; onClos
         <Link2 className="h-4 w-4 text-primary" />
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{t("editor.pageLinks.title")}</h2>
         {!loading && <span className="text-[10px] text-muted-foreground">{total}</span>}
-        <button type="button" onClick={onClose} className="p-1 text-muted-foreground hover:text-foreground" aria-label={t("editor.pageLinks.title")}>
+        <button type="button" onClick={onClose} className="p-1 text-muted-foreground hover:text-foreground" aria-label={t("common.close")}>
           <X className="h-4 w-4" />
         </button>
       </header>

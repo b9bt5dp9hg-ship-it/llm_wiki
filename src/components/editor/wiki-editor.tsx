@@ -401,7 +401,7 @@ export function WikiEditor({ content, onSave, filePath }: WikiEditorProps) {
           <header className="flex min-h-11 items-center gap-2 border-b border-border px-3 py-2">
             <Sparkles className="h-4 w-4 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate text-sm font-medium">{t("editor.selection.askAgent")}</span>
-            <button type="button" onClick={closeSelectionPanel} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("editor.selection.askAgent")}>
+            <button type="button" onClick={closeSelectionPanel} className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("common.close")}>
               <X className="h-3.5 w-3.5" />
             </button>
           </header>
