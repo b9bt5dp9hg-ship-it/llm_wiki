@@ -133,3 +133,45 @@ export function confineWikiFilePath(projectPath: string, targetPath: string): st
   if (!name || name === "." || name === ".." || !/\.md$/i.test(name)) return null
   return collapsed
 }
+
+function previewRootForRelativePath(project: string, raw: string): string {
+  if (raw.startsWith("wiki/") || raw.startsWith("raw/")) {
+    return `${project}/${raw}`
+  }
+  return `${project}/wiki/${raw}`
+}
+
+/**
+ * Resolve a review/lint preview path so `open:` cannot read outside
+ * `<project>/wiki/` or `<project>/raw/`. Relative targets join under `wiki/`
+ * unless they already start with `wiki/` or `raw/`. After collapsing `..`,
+ * `.llm-wiki` and other project-root files stay unreachable.
+ */
+export function confinePreviewFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : previewRootForRelativePath(project, raw)
+  const collapsed = collapsePathSegments(absolute)
+  const wikiRoot = `${project}/wiki`
+  const rawRoot = `${project}/raw`
+  if (!isPathInsideRoot(collapsed, wikiRoot) && !isPathInsideRoot(collapsed, rawRoot)) {
+    return null
+  }
+  if (caseFoldPath(collapsePathSegments(wikiRoot)) === caseFoldPath(collapsed)) return null
+  if (caseFoldPath(collapsePathSegments(rawRoot)) === caseFoldPath(collapsed)) return null
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === "..") return null
+  return collapsed
+}
+
+/** Confined preview path plus an optional `.md` sibling, matching prior open: lookup. */
+export function previewFilePathCandidates(projectPath: string, targetPath: string): string[] {
+  const confined = confinePreviewFilePath(projectPath, targetPath)
+  if (!confined) return []
+  if (/\.md$/i.test(confined)) return [confined]
+  return [confined, `${confined}.md`]
+}

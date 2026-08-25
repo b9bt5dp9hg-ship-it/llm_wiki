@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button"
 import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { writeFile, readFile, deleteFile } from "@/commands/fs"
-import { confineWikiFilePath, normalizePath } from "@/lib/path-utils"
+import { confineWikiFilePath, normalizePath, previewFilePathCandidates } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
@@ -133,15 +133,12 @@ export function ReviewView() {
       // Open a page in the right-side preview without resolving the
       // review item. Viewing is not the same as accepting / fixing it.
       const page = action.startsWith("open:")
-        ? action.slice(5)
+        ? action.slice("open:".length)
         : item?.affectedPages?.[0] ?? item?.sourcePath ?? ""
       if (!page) return
-      const normalizedPage = normalizePath(page)
-      const candidates = normalizedPage.startsWith(pp)
-        ? [normalizedPage]
-        : normalizedPage.startsWith("wiki/") || normalizedPage.startsWith("raw/")
-          ? [`${pp}/${normalizedPage}`, `${pp}/${normalizedPage}.md`]
-          : [`${pp}/wiki/${normalizedPage}`, `${pp}/wiki/${normalizedPage}.md`]
+      // Persisted review.json can name an arbitrary open: path. Collapse
+      // `..` and refuse anything outside wiki/ or raw/.
+      const candidates = previewFilePathCandidates(pp, page)
       for (const path of candidates) {
         try {
           const content = await readFile(path)

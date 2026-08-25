@@ -7,6 +7,8 @@ import {
   getRelativePath,
   isAbsolutePath,
   confineWikiFilePath,
+  confinePreviewFilePath,
+  previewFilePathCandidates,
 } from "./path-utils"
 
 describe("normalizePath", () => {
@@ -211,5 +213,96 @@ describe("confineWikiFilePath", () => {
     expect(
       confineWikiFilePath("C:/Users/me/MyWiki", "C:/Users/me/MyWiki/wiki/../.llm-wiki/project.json"),
     ).toBeNull()
+  })
+})
+
+describe("confinePreviewFilePath", () => {
+  const PROJECT = "/Users/me/MyWiki"
+
+  it("accepts wiki-relative, wiki/-prefixed, and in-project absolute wiki paths", () => {
+    expect(confinePreviewFilePath(PROJECT, "entities/foo.md")).toBe(
+      `${PROJECT}/wiki/entities/foo.md`,
+    )
+    expect(confinePreviewFilePath(PROJECT, "wiki/entities/foo.md")).toBe(
+      `${PROJECT}/wiki/entities/foo.md`,
+    )
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/wiki/queries/a.md`)).toBe(
+      `${PROJECT}/wiki/queries/a.md`,
+    )
+  })
+
+  it("accepts raw/sources paths used by review source previews", () => {
+    expect(confinePreviewFilePath(PROJECT, "raw/sources/paper.pdf")).toBe(
+      `${PROJECT}/raw/sources/paper.pdf`,
+    )
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/raw/sources/paper.pdf`)).toBe(
+      `${PROJECT}/raw/sources/paper.pdf`,
+    )
+  })
+
+  it("treats a bare raw or wiki stem as a wiki page name, not the tree root", () => {
+    expect(confinePreviewFilePath(PROJECT, "raw")).toBe(`${PROJECT}/wiki/raw`)
+    expect(confinePreviewFilePath(PROJECT, "wiki")).toBe(`${PROJECT}/wiki/wiki`)
+  })
+
+  it("rejects a prefix-matching absolute path that climbs out via ..", () => {
+    // Review open: previously used startsWith(projectPath), so this leaked.
+    expect(
+      confinePreviewFilePath(PROJECT, `${PROJECT}/wiki/../.llm-wiki/project.json`),
+    ).toBeNull()
+    expect(
+      confinePreviewFilePath(PROJECT, `${PROJECT}/wiki/../../.ssh/id_rsa.md`),
+    ).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, "concepts/../../../etc/passwd.md")).toBeNull()
+  })
+
+  it("rejects a sibling directory that only shares the project prefix", () => {
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}Secret/wiki/foo.md`)).toBeNull()
+  })
+
+  it("rejects .llm-wiki and other project-root files even when they sit under the project", () => {
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/.llm-wiki/chats/c1.json`)).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/schema.md`)).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, "../../.llm-wiki/project.json")).toBeNull()
+  })
+
+  it("rejects outside absolute paths and the wiki/raw roots themselves", () => {
+    expect(confinePreviewFilePath(PROJECT, "/etc/passwd")).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, "/etc/passwd.md")).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/wiki`)).toBeNull()
+    expect(confinePreviewFilePath(PROJECT, `${PROJECT}/raw`)).toBeNull()
+  })
+
+  it("accepts an in-project Windows preview path and rejects a drive-letter escape", () => {
+    expect(
+      confinePreviewFilePath("C:/Users/me/MyWiki", "C:/Users/me/MyWiki/wiki/queries/a.md"),
+    ).toBe("C:/Users/me/MyWiki/wiki/queries/a.md")
+    expect(
+      confinePreviewFilePath(
+        "C:/Users/me/MyWiki",
+        "C:/Users/me/MyWiki/wiki/../.llm-wiki/project.json",
+      ),
+    ).toBeNull()
+  })
+})
+
+describe("previewFilePathCandidates", () => {
+  const PROJECT = "/Users/me/MyWiki"
+
+  it("adds a .md sibling only when the confined path has no markdown extension", () => {
+    expect(previewFilePathCandidates(PROJECT, "entities/foo")).toEqual([
+      `${PROJECT}/wiki/entities/foo`,
+      `${PROJECT}/wiki/entities/foo.md`,
+    ])
+    expect(previewFilePathCandidates(PROJECT, "entities/foo.md")).toEqual([
+      `${PROJECT}/wiki/entities/foo.md`,
+    ])
+  })
+
+  it("returns no candidates for a path that escapes the project", () => {
+    expect(
+      previewFilePathCandidates(PROJECT, `${PROJECT}/wiki/../.llm-wiki/project.json`),
+    ).toEqual([])
+    expect(previewFilePathCandidates(PROJECT, "../../../etc/passwd")).toEqual([])
   })
 })

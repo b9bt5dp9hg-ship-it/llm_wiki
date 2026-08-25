@@ -20,7 +20,7 @@ import { useLintStore, type LintItem } from "@/stores/lint-store"
 import { runStructuralLint, runSemanticLint } from "@/lib/lint"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { readFile, writeFile } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
+import { normalizePath, previewFilePathCandidates } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import {
   appendWikilink,
@@ -191,10 +191,8 @@ export function LintView() {
   async function handleOpenPage(page: string) {
     if (!project) return
     const pp = normalizePath(project.path)
-    const candidates = [
-      `${pp}/wiki/${page}`,
-      `${pp}/wiki/${page}.md`,
-    ]
+    const candidates = previewFilePathCandidates(pp, page)
+    if (candidates.length === 0) return
     for (const path of candidates) {
       try {
         const content = await readFile(path)
