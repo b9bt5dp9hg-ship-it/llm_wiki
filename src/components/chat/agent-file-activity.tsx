@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react"
 import { ChevronDown, ChevronRight, FilePlus2, FileText, RotateCcw } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { deleteFile, readFile, writeFile } from "@/commands/fs"
+import { readFile } from "@/commands/fs"
 import type { ChatAgentFileChange } from "@/lib/chat-agent-types"
-import { getFileName } from "@/lib/path-utils"
+import { confineProjectFilePath, getFileName } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { useWikiStore } from "@/stores/wiki-store"
-import { groupAgentFileChanges } from "@/lib/agent-file-activity"
+import { groupAgentFileChanges, undoAgentFileChange } from "@/lib/agent-file-activity"
 
 export function AgentFileActivity({
   changes,
@@ -33,19 +33,16 @@ export function AgentFileActivity({
     setUndoing(change.id)
     setError(null)
     try {
-      const currentContent = await readFile(change.path).catch(() => null)
-      if (currentContent !== change.afterContent) {
-        throw new Error(t("chat.agentChanges.undoConflict"))
-      }
-      if (change.operation === "created" && change.beforeContent === null) {
-        await deleteFile(change.path)
-      } else if (typeof change.beforeContent === "string") {
-        await writeFile(change.path, change.beforeContent)
-      }
+      await undoAgentFileChange(project.path, change)
       await refreshProjectFileTree(project.path, { bumpDataVersion: true })
       setUndone((current) => new Set(current).add(change.id))
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setError(
+        /outside the project|conflict/i.test(message)
+          ? t("chat.agentChanges.undoConflict")
+          : message,
+      )
     } finally {
       setUndoing(null)
     }
@@ -81,9 +78,12 @@ export function AgentFileActivity({
                 <button
                   type="button"
                   onClick={() => {
-                    void readFile(group.path)
+                    if (!project) return
+                    const confined = confineProjectFilePath(project.path, group.path)
+                    if (!confined) return
+                    void readFile(confined)
                       .catch(() => "")
-                      .then((content) => openFileInPreview(group.path, content))
+                      .then((content) => openFileInPreview(confined, content))
                   }}
                   className="min-w-0 flex-1 truncate text-left hover:underline"
                   title={group.path}
