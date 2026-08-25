@@ -464,6 +464,27 @@ test("buildGraphOffline counts a repeated wikilink as one unique edge, matching 
   }
 })
 
+test("buildGraphOffline lowercases types and matches nodeType case-insensitively like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-type-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: Entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nNo links.\n",
+    )
+
+    const graph = buildGraphOffline(root, { nodeType: "ENTITY" })
+    assert.deepEqual(graph.nodes.map((node) => node.id), ["alpha"])
+    assert.equal(graph.nodes[0]?.type, "entity")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline omits type=query pages like the live API", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-query-"))
   try {

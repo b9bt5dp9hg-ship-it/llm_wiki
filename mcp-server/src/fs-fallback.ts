@@ -655,13 +655,16 @@ export function buildGraphOffline(
   let nodes: ApiGraphNode[] = [...raw.entries()].map(([id, page]) => ({
     id,
     label: frontmatterField(page.content, "title") ?? pageStem(page.rel),
-    type: frontmatterField(page.content, "type") ?? "other",
+    type: (frontmatterField(page.content, "type") ?? "other").toLowerCase(),
     path: page.rel,
     linkCount: linkCounts.get(id) ?? 0,
   }))
-    .filter((node) => node.type.toLowerCase() !== "query")
+    .filter((node) => node.type !== "query")
 
-  if (options.nodeType) nodes = nodes.filter((node) => node.type === options.nodeType)
+  if (options.nodeType) {
+    const nodeType = options.nodeType.toLowerCase()
+    nodes = nodes.filter((node) => node.type === nodeType)
+  }
   if (options.q) {
     const needle = options.q.toLowerCase()
     nodes = nodes.filter((node) => node.label.toLowerCase().includes(needle) || node.id.toLowerCase().includes(needle))
