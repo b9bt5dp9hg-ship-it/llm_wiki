@@ -224,7 +224,44 @@ function safeJoinOffline(projectPath: string, relPath: string): string {
   return joined
 }
 
-function walkDir(base: string, relRoot: string, recursive: boolean, budget: { left: number }): ApiFileNode[] {
+type FileBudget = { left: number; skipped: boolean }
+
+function remainingHasFiles(
+  base: string,
+  relRoot: string,
+  entries: fs.Dirent[],
+  start: number,
+  recursive: boolean,
+): boolean {
+  for (let i = start; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.name.startsWith(".")) continue
+    if (entry.isFile()) return true
+    if (entry.isDirectory() && recursive) {
+      const rel = path.posix.join(relRoot.replace(/\\/g, "/"), entry.name)
+      if (dirContainsListableFiles(base, rel)) return true
+    }
+  }
+  return false
+}
+
+function dirContainsListableFiles(base: string, relRoot: string): boolean {
+  let absRoot: string
+  try {
+    absRoot = safeJoinOffline(base, relRoot)
+  } catch {
+    return false
+  }
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(absRoot, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  return remainingHasFiles(base, relRoot, entries, 0, true)
+}
+
+function walkDir(base: string, relRoot: string, recursive: boolean, budget: FileBudget): ApiFileNode[] {
   let absRoot: string
   try {
     absRoot = safeJoinOffline(base, relRoot)
@@ -239,9 +276,13 @@ function walkDir(base: string, relRoot: string, recursive: boolean, budget: { le
   }
   entries.sort((a, b) => a.name.localeCompare(b.name))
   const nodes: ApiFileNode[] = []
-  for (const entry of entries) {
-    if (budget.left <= 0) break
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
     if (entry.name.startsWith(".")) continue
+    if (budget.left <= 0) {
+      if (remainingHasFiles(base, relRoot, entries, i, recursive)) budget.skipped = true
+      break
+    }
     const rel = path.posix.join(relRoot.replace(/\\/g, "/"), entry.name)
     if (entry.isDirectory()) {
       const children = recursive ? walkDir(base, rel, recursive, budget) : undefined
@@ -259,7 +300,7 @@ function listPublicRootNode(
   projectPath: string,
   rel: string,
   recursive: boolean,
-  budget: { left: number },
+  budget: FileBudget,
 ): ApiFileNode | null {
   let abs: string
   try {
@@ -277,7 +318,10 @@ function listPublicRootNode(
   const posix = rel.replace(/\\/g, "/")
   const name = path.posix.basename(posix)
   if (stat.isFile()) {
-    if (budget.left <= 0) return null
+    if (budget.left <= 0) {
+      budget.skipped = true
+      return null
+    }
     budget.left--
     return { name, path: posix, isDir: false }
   }
@@ -294,7 +338,10 @@ export function listFilesOffline(
 ): ApiFilesResponse {
   const root = options.root ?? "wiki"
   const recursive = options.recursive ?? true
-  const budget = { left: Math.max(1, Math.min(options.maxFiles ?? DEFAULT_MAX_FILES, DEFAULT_MAX_FILES)) }
+  const budget: FileBudget = {
+    left: Math.max(1, Math.min(options.maxFiles ?? DEFAULT_MAX_FILES, DEFAULT_MAX_FILES)),
+    skipped: false,
+  }
   const files: ApiFileNode[] = []
   if (root === "all") {
     for (const rel of ["purpose.md", "schema.md", "wiki", "raw/sources"] as const) {
@@ -304,7 +351,8 @@ export function listFilesOffline(
   } else {
     files.push(...walkDir(projectPath, root === "sources" ? "raw/sources" : "wiki", recursive, budget))
   }
-  return { files, truncated: budget.left <= 0 }
+  // Exhausting the file budget is not truncation unless a remaining file was omitted.
+  return { files, truncated: budget.skipped }
 }
 
 export function readFileOffline(projectPath: string, relPath: string): { path: string; content: string } {

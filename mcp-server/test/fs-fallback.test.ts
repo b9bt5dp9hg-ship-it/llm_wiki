@@ -3,6 +3,7 @@ import { test, before, after } from "node:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import type { ApiFileNode } from "../src/api-client.js"
 import {
   buildGraphOffline,
   findOfflineProject,
@@ -104,6 +105,47 @@ test("listFilesOffline root=all matches live-API public roots including purpose.
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("listFilesOffline marks truncated only when remaining files were omitted", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-files-trunc-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki", "nested"), { recursive: true })
+    fs.mkdirSync(path.join(root, "wiki", "empty"), { recursive: true })
+    fs.mkdirSync(path.join(root, "raw", "sources"), { recursive: true })
+    fs.writeFileSync(path.join(root, "purpose.md"), "# Purpose\n")
+    fs.writeFileSync(path.join(root, "schema.md"), "# Schema\n")
+    fs.writeFileSync(path.join(root, "wiki", "alpha.md"), "alpha")
+    fs.writeFileSync(path.join(root, "wiki", "nested", "beta.md"), "beta")
+    fs.writeFileSync(path.join(root, "raw", "sources", "note.txt"), "note")
+
+    const exactWiki = listFilesOffline(root, { root: "wiki", maxFiles: 2 })
+    assert.equal(exactWiki.truncated, false)
+    assert.equal(countListedFiles(exactWiki.files), 2)
+
+    const omittedWiki = listFilesOffline(root, { root: "wiki", maxFiles: 1 })
+    assert.equal(omittedWiki.truncated, true)
+    assert.equal(countListedFiles(omittedWiki.files), 1)
+
+    const exactAll = listFilesOffline(root, { root: "all", maxFiles: 5 })
+    assert.equal(exactAll.truncated, false)
+    assert.equal(countListedFiles(exactAll.files), 5)
+
+    const omittedAll = listFilesOffline(root, { root: "all", maxFiles: 4 })
+    assert.equal(omittedAll.truncated, true)
+    assert.ok(countListedFiles(omittedAll.files) < 5)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function countListedFiles(nodes: ApiFileNode[]): number {
+  let count = 0
+  for (const node of nodes) {
+    if (node.isDir) count += countListedFiles(node.children ?? [])
+    else count++
+  }
+  return count
+}
 
 test("readFileOffline enforces the allow-list", () => {
   assert.ok(readFileOffline(projectDir, "wiki/alpha.md").content.includes("Alpha"))
