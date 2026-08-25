@@ -354,7 +354,7 @@ const SEARCH_STOP_WORDS = new Set([
 export function tokenizeOfflineQuery(query: string): string[] {
   const rawTokens = query
     .toLowerCase()
-    .split(/[\s,，。！？、；：""''（）()\-_/\\·~～…]+/)
+    .split(/[\s,，。！？、；：""''“”‘’（）()\-_/\\·~～…]+/)
     .filter((token) => token.length > 1)
     .filter((token) => !SEARCH_STOP_WORDS.has(token))
 

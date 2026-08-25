@@ -127,6 +127,15 @@ test("searchOffline tokenizes CJK queries instead of requiring the whole phrase"
   assert.ok(result.results.some((hit) => hit.path === "wiki/tacit.md"), "expected CJK bigram hits on a page that never contains the full phrase")
 })
 
+test("searchOffline splits typographic quotes like the desktop tokenizer", () => {
+  fs.writeFileSync(
+    path.join(projectDir, "wiki", "quoted.md"),
+    "---\ntitle: Tacit knowledge\ntype: concept\n---\n\nA note about tacit knowledge.\n",
+  )
+  const result = searchOffline(projectDir, "“tacit knowledge”")
+  assert.ok(result.results.some((hit) => hit.path === "wiki/quoted.md"))
+})
+
 function withAppState<T>(state: unknown, fn: () => T): T {
   const prevState = process.env.LLM_WIKI_APP_STATE
   const prevProject = process.env.LLM_WIKI_PROJECT_PATH
