@@ -458,7 +458,7 @@ describe("ingest-queue — retry & failure", () => {
     const saved = [
       {
         id: "ingest-failed-a",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "failed",
         addedAt: 0,
@@ -467,7 +467,7 @@ describe("ingest-queue — retry & failure", () => {
       },
       {
         id: "ingest-failed-b",
-        sourcePath: "b.md",
+        sourcePath: "raw/sources/b.md",
         folderContext: "",
         status: "failed",
         addedAt: 1,
@@ -763,12 +763,98 @@ describe("ingest-queue — clearQueueState", () => {
 })
 
 describe("ingest-queue — restoreQueue", () => {
+  it("drops restored tasks whose sourcePath leaves raw/sources", async () => {
+    mockAutoIngest.mockResolvedValue(["wiki/sources/paper.md"])
+    mockReadFile.mockResolvedValue(JSON.stringify([
+      {
+        id: "ingest-ok",
+        sourcePath: "raw/sources/paper.pdf",
+        folderContext: "papers",
+        status: "pending",
+        addedAt: 1,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-abs-inside",
+        sourcePath: `${TEST_PATH}/raw/sources/inside.md`,
+        folderContext: "",
+        status: "failed",
+        addedAt: 2,
+        error: "prior",
+        retryCount: 1,
+      },
+      {
+        id: "ingest-escape",
+        sourcePath: "raw/sources/../../.llm-wiki/project.json",
+        folderContext: "",
+        status: "pending",
+        addedAt: 3,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-wiki",
+        sourcePath: "wiki/index.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 4,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-outside",
+        sourcePath: "/etc/passwd",
+        folderContext: "",
+        status: "pending",
+        addedAt: 5,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-bare",
+        sourcePath: "a.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 6,
+        error: null,
+        retryCount: 0,
+      },
+    ]))
+
+    await restoreQueue(TEST_ID, TEST_PATH)
+    await flushMicrotasks(2)
+
+    expect(getQueue().map((task) => task.sourcePath)).toEqual([
+      "raw/sources/paper.pdf",
+      "raw/sources/inside.md",
+    ])
+    expect(mockAutoIngest).not.toHaveBeenCalled()
+
+    const persisted = mockWriteFile.mock.calls
+      .map((call) => call[1])
+      .filter((payload): payload is string => typeof payload === "string")
+      .map((payload) => {
+        try {
+          return JSON.parse(payload) as Array<{ id: string; sourcePath: string }>
+        } catch {
+          return null
+        }
+      })
+      .find((tasks) => Array.isArray(tasks) && tasks.some((task) => task.id === "ingest-ok"))
+    expect(persisted?.map((task) => task.sourcePath)).toEqual([
+      "raw/sources/paper.pdf",
+      "raw/sources/inside.md",
+    ])
+    expect(persisted?.some((task) => task.sourcePath.includes(".."))).toBe(false)
+  })
+
   it("auto-resumes restored pending work when explicitly requested", async () => {
     mockAutoIngest.mockResolvedValue([])
     mockReadFile.mockResolvedValue(JSON.stringify([
       {
         id: "ingest-auto-resume",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -801,7 +887,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-abc",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "processing",
         addedAt: 0,
@@ -824,7 +910,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-x",
-        sourcePath: "x.md",
+        sourcePath: "raw/sources/x.md",
         folderContext: "",
         status: "failed",
         addedAt: 0,
@@ -846,7 +932,7 @@ describe("ingest-queue — restoreQueue", () => {
     const savedLegacy = [
       {
         id: "ingest-legacy",
-        sourcePath: "legacy.md",
+        sourcePath: "raw/sources/legacy.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -869,7 +955,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -897,7 +983,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -915,7 +1001,7 @@ describe("ingest-queue — restoreQueue", () => {
 
     expect(mockAutoIngest).toHaveBeenCalledTimes(1)
     expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/live.md`)
-    expect(getQueue().map((task) => task.sourcePath)).toEqual(["restored.md"])
+    expect(getQueue().map((task) => task.sourcePath)).toEqual(["raw/sources/restored.md"])
     expect(getQueueSummary().paused).toBe(true)
   })
 
@@ -923,7 +1009,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -951,7 +1037,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "same.md",
+        sourcePath: "raw/sources/same.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -964,11 +1050,11 @@ describe("ingest-queue — restoreQueue", () => {
 
     await restoreQueue(TEST_ID, TEST_PATH)
     await flushMicrotasks(2)
-    await enqueueIngest(TEST_ID, "same.md")
+    await enqueueIngest(TEST_ID, "raw/sources/same.md")
     await flushMicrotasks(10)
 
     expect(mockAutoIngest).toHaveBeenCalledTimes(1)
-    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/same.md`)
+    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/raw/sources/same.md`)
     expect(getQueue()).toHaveLength(0)
     expect(getQueueSummary().paused).toBe(false)
   })
@@ -1026,7 +1112,7 @@ describe("ingest-queue — pauseQueue & switch-project survival", () => {
 
   it("pauseQueue then restoreQueue of SAME project brings tasks back", async () => {
     mockAutoIngest.mockImplementation(() => new Promise(() => {}))
-    await enqueueIngest(TEST_ID, "first.md")
+    await enqueueIngest(TEST_ID, "raw/sources/first.md")
     await flushMicrotasks(2)
 
     // Capture what pauseQueue writes so restore can read it back.
@@ -1042,7 +1128,7 @@ describe("ingest-queue — pauseQueue & switch-project survival", () => {
 
     const queue = getQueue()
     expect(queue).toHaveLength(1)
-    expect(queue[0].sourcePath).toBe("first.md")
+    expect(queue[0].sourcePath).toBe("raw/sources/first.md")
   })
 
   it("processNext bails if currentProjectId changes mid-ingest (no cross-project writes)", async () => {

@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "@/commands/fs"
 import { autoIngest } from "./ingest"
-import { normalizePath, isAbsolutePath } from "@/lib/path-utils"
+import { normalizePath, isAbsolutePath, getRelativePath } from "@/lib/path-utils"
 import { getProjectPathById } from "@/lib/project-identity"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getTaskLlmConfig } from "@/lib/llm-task-routing"
@@ -165,6 +165,36 @@ function normalizeSourcePathForQueue(sourcePath: string): string {
     return normalized.slice(currentProjectPath.length + 1)
   }
   return normalized
+}
+
+/**
+ * Restored ingest tasks come from `.llm-wiki/ingest-queue.json`, which is
+ * not a trusted writer. A poisoned file can name `wiki/`, `.llm-wiki/`,
+ * or a path that walks out of the project via `..`. Live enqueue still
+ * accepts watcher paths; only restore confines work to `raw/sources/`.
+ */
+function isSafeRestoredIngestSourcePath(p: string): boolean {
+  if (!p) return false
+  if (/[\x00-\x1f]/.test(p)) return false
+  if (p.startsWith("/") || p.startsWith("\\")) return false
+  if (/^[a-zA-Z]:/.test(p)) return false
+  const normalized = p.replace(/\\/g, "/")
+  if (!normalized.startsWith("raw/sources/")) return false
+  const rest = normalized.slice("raw/sources/".length)
+  if (!rest || rest.endsWith("/")) return false
+  const segments = normalized.split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return false
+  return true
+}
+
+function confineRestoredSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  if (typeof sourcePath !== "string") return null
+  const normalized = normalizePath(sourcePath.trim())
+  if (!normalized) return null
+  const relative = isAbsolutePath(normalized)
+    ? getRelativePath(normalized, projectPath)
+    : normalized
+  return isSafeRestoredIngestSourcePath(relative) ? relative : null
 }
 
 function sameQueuedSourcePath(a: string, b: string): boolean {
@@ -872,16 +902,29 @@ export async function restoreQueue(
     )
   }
 
-  // Reset any "processing" tasks back to "pending" (interrupted by app close)
+  const confined: IngestTask[] = []
+  let droppedUnsafe = 0
   let restored = 0
   for (const task of mine) {
+    const sourcePath = confineRestoredSourcePath(task.sourcePath, pp)
+    if (!sourcePath) {
+      droppedUnsafe++
+      continue
+    }
+    // Reset any "processing" tasks back to "pending" (interrupted by app close)
     if (task.status === "processing") {
       task.status = "pending"
       restored++
     }
+    confined.push({ ...task, sourcePath })
+  }
+  if (droppedUnsafe > 0) {
+    console.warn(
+      `[Ingest Queue] Dropped ${droppedUnsafe} restored tasks whose sourcePath left raw/sources`,
+    )
   }
 
-  queue = mine
+  queue = confined
   restoredPausedTaskIds = autoResume
     ? new Set()
     : new Set(

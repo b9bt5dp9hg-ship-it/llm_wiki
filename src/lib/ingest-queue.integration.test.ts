@@ -152,8 +152,8 @@ describe("ingest-queue persistence — write", () => {
 describe("ingest-queue persistence — restore round-trip", () => {
   it("restoreQueue reads back exactly what enqueue wrote", async () => {
     await enqueueBatch(TEST_ID_A, [
-      { sourcePath: "a.md", folderContext: "ctx-a" },
-      { sourcePath: "b.md", folderContext: "ctx-b" },
+      { sourcePath: "raw/sources/a.md", folderContext: "ctx-a" },
+      { sourcePath: "raw/sources/b.md", folderContext: "ctx-b" },
     ])
     // Wait for disk state to stabilize
     await waitFor(async () => {
@@ -171,14 +171,17 @@ describe("ingest-queue persistence — restore round-trip", () => {
     await restoreQueue(TEST_ID_A, tmp.path)
     const restored = getQueue()
     expect(restored).toHaveLength(2)
-    expect(restored.map((t) => t.sourcePath).sort()).toEqual(["a.md", "b.md"])
+    expect(restored.map((t) => t.sourcePath).sort()).toEqual([
+      "raw/sources/a.md",
+      "raw/sources/b.md",
+    ])
   })
 
   it("converts 'processing' back to 'pending' when restoring (interrupted app close)", async () => {
     const saved = [
       {
         id: "ingest-abc",
-        sourcePath: "interrupted.md",
+        sourcePath: "raw/sources/interrupted.md",
         folderContext: "",
         status: "processing",
         addedAt: 0,
@@ -205,7 +208,7 @@ describe("ingest-queue persistence — restore round-trip", () => {
     const saved = [
       {
         id: "ingest-x",
-        sourcePath: "broken.md",
+        sourcePath: "raw/sources/broken.md",
         folderContext: "",
         status: "failed",
         addedAt: 0,
