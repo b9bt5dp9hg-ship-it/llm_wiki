@@ -49,6 +49,7 @@ const PROJECT_LLM_OVERRIDES_KEY = "projectLlmOverrides"
 const CUSTOM_LLM_PRESETS_KEY = "customLlmPresets"
 let projectLlmOverrideWrite = Promise.resolve()
 let customLlmPresetWrite = Promise.resolve()
+let recentProjectsWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   const store = await getStore()
@@ -364,24 +365,28 @@ export async function loadScheduledImportConfig(projectPath: string): Promise<Sc
 export async function removeFromRecentProjects(
   path: string
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-  const updated = existing.filter((p) => p.path !== path)
-  await store.set(RECENT_PROJECTS_KEY, updated)
-  // ALSO clear the last-project pointer if it points at the project
-  // we just removed. Without this, App.tsx's startup auto-open
-  // (`getLastProject()` → `openProject()` → `saveLastProject()`)
-  // re-adds the removed entry back to recents on the next launch,
-  // making the delete look like it didn't take. Reported by user
-  // as "deleted project comes back after restart."
-  const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
-  if (last && last.path === path) {
-    await store.delete(LAST_PROJECT_KEY)
-  }
-  // Force-flush. autoSave is a 100ms debounce — removing a recent
-  // project and quitting (or auto-opening lastProject) inside that
-  // window would restore the entry on the next launch.
-  await store.save()
+  const write = recentProjectsWrite.then(async () => {
+    const store = await getStore()
+    const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+    const updated = existing.filter((p) => p.path !== path)
+    await store.set(RECENT_PROJECTS_KEY, updated)
+    // ALSO clear the last-project pointer if it points at the project
+    // we just removed. Without this, App.tsx's startup auto-open
+    // (`getLastProject()` → `openProject()` → `saveLastProject()`)
+    // re-adds the removed entry back to recents on the next launch,
+    // making the delete look like it didn't take. Reported by user
+    // as "deleted project comes back after restart."
+    const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
+    if (last && last.path === path) {
+      await store.delete(LAST_PROJECT_KEY)
+    }
+    // Force-flush. autoSave is a 100ms debounce — removing a recent
+    // project and quitting (or auto-opening lastProject) inside that
+    // window would restore the entry on the next launch.
+    await store.save()
+  })
+  recentProjectsWrite = write.catch(() => {})
+  await write
 }
 
 const LANGUAGE_KEY = "language"

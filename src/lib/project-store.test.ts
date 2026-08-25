@@ -1,15 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
 
-const { memory, save } = vi.hoisted(() => {
+const { memory, save, getHooks } = vi.hoisted(() => {
   const memory = new Map<string, unknown>()
   const save = vi.fn(async () => {})
-  return { memory, save }
+  const getHooks = {
+    afterRecentSnapshot: undefined as undefined | (() => Promise<void>),
+  }
+  return { memory, save, getHooks }
 })
 
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: vi.fn(async () => ({
     async get(key: string) {
-      return memory.get(key)
+      const value = memory.get(key)
+      if (key === "recentProjects" && getHooks.afterRecentSnapshot) {
+        await getHooks.afterRecentSnapshot()
+      }
+      return value
     },
     async set(key: string, value: unknown) {
       memory.set(key, value)
@@ -133,6 +141,7 @@ describe("removeFromRecentProjects durability", () => {
   beforeEach(() => {
     memory.clear()
     save.mockClear()
+    getHooks.afterRecentSnapshot = undefined
     memory.set("recentProjects", [GONE, KEEP])
     memory.set("lastProject", GONE)
   })
@@ -153,5 +162,32 @@ describe("removeFromRecentProjects durability", () => {
     expect(await getRecentProjects()).toEqual([KEEP])
     expect(await getLastProject()).toEqual(KEEP)
     expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not restore a removed project when two removals overlap on a stale snapshot", async () => {
+    const ALSO = { id: "also-id", name: "Also", path: "/tmp/also-wiki" }
+    memory.set("recentProjects", [GONE, ALSO, KEEP])
+    memory.set("lastProject", KEEP)
+
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let recentGets = 0
+    getHooks.afterRecentSnapshot = async () => {
+      recentGets += 1
+      if (recentGets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = removeFromRecentProjects(GONE.path)
+    await firstGetStarted.promise
+    const second = removeFromRecentProjects(ALSO.path)
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterRecentSnapshot = undefined
+
+    expect(await getRecentProjects()).toEqual([KEEP])
   })
 })
