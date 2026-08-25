@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { useWikiStore } from "@/stores/wiki-store"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
 
 const mockInvoke = vi.fn()
 
@@ -13,7 +14,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }))
 
-import { searchWiki, tokenizeQuery } from "./search"
+import { createSearchSession, searchWiki, tokenizeQuery } from "./search"
 
 beforeEach(() => {
   mockInvoke.mockReset()
@@ -158,5 +159,91 @@ describe("searchWiki backend wrapper", () => {
     expect(tokens).toContain("默会")
     expect(tokens).toContain("知识")
     expect(tokens).toContain("默")
+  })
+})
+
+function searchHit(title: string, path: string) {
+  return {
+    path,
+    title,
+    snippet: title,
+    titleMatch: true,
+    score: 1,
+    images: [],
+  }
+}
+
+function searchResponse(title: string, path: string) {
+  return {
+    mode: "keyword" as const,
+    tokenHits: 1,
+    vectorHits: 0,
+    results: [searchHit(title, path)],
+  }
+}
+
+describe("createSearchSession", () => {
+  it("does not apply a slower older query after a newer search finishes", async () => {
+    const older = createDeferred<ReturnType<typeof searchResponse>>()
+    mockInvoke.mockImplementationOnce(() => older.promise)
+    mockInvoke.mockResolvedValueOnce(
+      searchResponse("Beta", "wiki/concepts/beta.md"),
+    )
+
+    const session = createSearchSession()
+    const olderSearch = session.run("/tmp/project", "alpha")
+    await flushMicrotasks()
+    const newerSearch = session.run("/tmp/project", "beta")
+
+    await expect(newerSearch).resolves.toMatchObject({
+      status: "applied",
+      results: [expect.objectContaining({ title: "Beta" })],
+    })
+
+    older.resolve(searchResponse("Alpha", "wiki/concepts/alpha.md"))
+    await expect(olderSearch).resolves.toMatchObject({ status: "stale" })
+  })
+
+  it("treats an empty query as a newer request so in-flight hits cannot refill the list", async () => {
+    const older = createDeferred<ReturnType<typeof searchResponse>>()
+    mockInvoke.mockImplementationOnce(() => older.promise)
+
+    const session = createSearchSession()
+    const olderSearch = session.run("/tmp/project", "alpha")
+    await flushMicrotasks()
+    const cleared = session.run("/tmp/project", "   ")
+
+    await expect(cleared).resolves.toMatchObject({ status: "applied", results: [] })
+    older.resolve(searchResponse("Alpha", "wiki/concepts/alpha.md"))
+    await expect(olderSearch).resolves.toMatchObject({ status: "stale" })
+  })
+
+  it("drops in-flight results after invalidate", async () => {
+    const older = createDeferred<ReturnType<typeof searchResponse>>()
+    mockInvoke.mockImplementationOnce(() => older.promise)
+
+    const session = createSearchSession()
+    const olderSearch = session.run("/tmp/project", "alpha")
+    await flushMicrotasks()
+    session.invalidate()
+    older.resolve(searchResponse("Alpha", "wiki/concepts/alpha.md"))
+    await expect(olderSearch).resolves.toMatchObject({ status: "stale" })
+  })
+
+  it("does not surface a failure from a superseded search", async () => {
+    const older = createDeferred<ReturnType<typeof searchResponse>>()
+    mockInvoke.mockImplementationOnce(() => older.promise)
+    mockInvoke.mockResolvedValueOnce(
+      searchResponse("Beta", "wiki/concepts/beta.md"),
+    )
+
+    const session = createSearchSession()
+    const olderSearch = session.run("/tmp/project", "alpha")
+    await flushMicrotasks()
+    const newerSearch = session.run("/tmp/project", "beta")
+
+    await expect(newerSearch).resolves.toMatchObject({ status: "applied" })
+    older.reject(new Error("backend timeout"))
+    await expect(olderSearch).resolves.toMatchObject({ status: "stale" })
   })
 })

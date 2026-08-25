@@ -1,8 +1,8 @@
-import { useState, useCallback, useMemo, useEffect } from "react"
+import { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import { Search, FileText, ImageIcon, X, ArrowUpRight } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
-import { searchWiki, tokenizeQuery, type SearchResult, type ImageRef } from "@/lib/search"
+import { createSearchSession, tokenizeQuery, type SearchResult, type ImageRef } from "@/lib/search"
 import { useTranslation } from "react-i18next"
 import { normalizePath } from "@/lib/path-utils"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
@@ -40,23 +40,45 @@ export function SearchView() {
   // the lightbox, and search-view-local state means the modal
   // closes naturally when the user navigates away from search.
   const [lightbox, setLightbox] = useState<ImageHit | null>(null)
+  const searchSessionRef = useRef(createSearchSession())
+
+  useEffect(() => {
+    searchSessionRef.current.invalidate()
+    setResults([])
+    setSearching(false)
+    setHasSearched(false)
+  }, [project?.path])
 
   const doSearch = useCallback(
     async (q: string) => {
-      if (!project || !q.trim()) {
+      const session = searchSessionRef.current
+      if (!project) {
+        session.invalidate()
         setResults([])
+        setSearching(false)
+        return
+      }
+      if (!q.trim()) {
+        const outcome = await session.run(normalizePath(project.path), q)
+        if (outcome.status === "stale") return
+        setResults([])
+        setSearching(false)
         return
       }
       setSearching(true)
       setHasSearched(true)
+      const pending = session.run(normalizePath(project.path), q)
+      const token = session.generation
       try {
-        const found = await searchWiki(normalizePath(project.path), q)
-        setResults(found)
+        const outcome = await pending
+        if (outcome.status === "stale") return
+        setResults(outcome.results)
       } catch (err) {
+        if (!session.isCurrent(token)) return
         console.error("Search failed:", err)
         setResults([])
       } finally {
-        setSearching(false)
+        if (session.isCurrent(token)) setSearching(false)
       }
     },
     [project],

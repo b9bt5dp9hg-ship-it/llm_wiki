@@ -84,3 +84,44 @@ export async function searchWiki(
   }
   return results
 }
+
+export type SearchSessionOutcome =
+  | { status: "applied"; results: SearchResult[]; token: number }
+  | { status: "stale"; token: number }
+
+/**
+ * Latest-wins guard for overlapping `searchWiki` calls. A slower older
+ * query must not replace a newer result list (or refill it after clear).
+ */
+export function createSearchSession() {
+  let generation = 0
+
+  return {
+    get generation() {
+      return generation
+    },
+    invalidate() {
+      generation += 1
+    },
+    isCurrent(token: number) {
+      return token === generation
+    },
+    async run(projectPath: string, query: string): Promise<SearchSessionOutcome> {
+      const token = ++generation
+      if (!query.trim()) {
+        return token === generation
+          ? { status: "applied", results: [], token }
+          : { status: "stale", token }
+      }
+      try {
+        const results = await searchWiki(projectPath, query)
+        return token === generation
+          ? { status: "applied", results, token }
+          : { status: "stale", token }
+      } catch (error) {
+        if (token !== generation) return { status: "stale", token }
+        throw error
+      }
+    },
+  }
+}
