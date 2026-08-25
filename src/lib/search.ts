@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { normalizePath } from "@/lib/path-utils"
+import { confinePreviewFilePath, normalizePath } from "@/lib/path-utils"
 import { useWikiStore } from "@/stores/wiki-store"
 
 export interface ImageRef {
@@ -76,8 +76,11 @@ export async function searchWiki(
     embeddingConfig: embCfg,
   })
 
-  return response.results.map((result) => ({
-    ...result,
-    path: `${pp}/${normalizePath(result.path).replace(/^\/+/, "")}`,
-  }))
+  const results: SearchResult[] = []
+  for (const result of response.results) {
+    const confined = confinePreviewFilePath(pp, result.path)
+    if (!confined) continue
+    results.push({ ...result, path: confined })
+  }
+  return results
 }

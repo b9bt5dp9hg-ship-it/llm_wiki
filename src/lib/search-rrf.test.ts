@@ -56,6 +56,78 @@ describe("searchWiki backend wrapper", () => {
     expect(out[0].path).toBe("/tmp/project/wiki/concepts/attention.md")
   })
 
+  it("drops search hits whose paths escape the project wiki or raw tree", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      mode: "keyword",
+      tokenHits: 4,
+      vectorHits: 0,
+      results: [
+        {
+          path: "wiki/../.llm-wiki/project.json",
+          title: "secret",
+          snippet: "id",
+          titleMatch: true,
+          score: 1,
+          images: [],
+        },
+        {
+          path: "../outside.md",
+          title: "outside",
+          snippet: "x",
+          titleMatch: true,
+          score: 1,
+          images: [],
+        },
+        {
+          path: "/etc/passwd.md",
+          title: "passwd",
+          snippet: "root",
+          titleMatch: true,
+          score: 1,
+          images: [],
+        },
+        {
+          path: "wiki/concepts/attention.md",
+          title: "Attention",
+          snippet: "Attention",
+          titleMatch: true,
+          score: 1 / 61,
+          images: [],
+        },
+      ],
+    })
+
+    const out = await searchWiki("/tmp/project", "attention")
+
+    expect(out.map((result) => result.path)).toEqual([
+      "/tmp/project/wiki/concepts/attention.md",
+    ])
+  })
+
+  it("keeps already-absolute in-project wiki paths instead of double-joining them", async () => {
+    mockInvoke.mockResolvedValueOnce({
+      mode: "keyword",
+      tokenHits: 1,
+      vectorHits: 0,
+      results: [
+        {
+          path: "/tmp/project/wiki/concepts/attention.md",
+          title: "Attention",
+          snippet: "Attention",
+          titleMatch: true,
+          score: 1 / 61,
+          images: [],
+        },
+      ],
+    })
+
+    const out = await searchWiki("/tmp/project", "attention")
+
+    expect(out.map((result) => result.path)).toEqual([
+      "/tmp/project/wiki/concepts/attention.md",
+    ])
+  })
+
   it("passes disabled embedding config through for backend keyword-only search", async () => {
     useWikiStore.getState().setEmbeddingConfig({
       enabled: false,
