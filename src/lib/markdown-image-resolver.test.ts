@@ -122,6 +122,62 @@ describe("resolveMarkdownImageSrc", () => {
     ).toBe("\\\\share\\folder\\img.png")
   })
 
+  describe("file: URL confinement", () => {
+    it("does not pass through a file: URL that points outside the project", () => {
+      const outside = "file:///etc/passwd"
+      const resolved = resolveMarkdownImageSrc(outside, PROJECT)
+      expect(resolved).not.toMatch(/^file:/i)
+      expect(resolved).not.toMatch(/^tauri-asset:/)
+      expect(resolved).not.toContain("/etc/passwd")
+    })
+
+    it("does not pass through a FILE: URL sibling that shares the project prefix", () => {
+      const sibling = "FILE:///Users/me/MyWikiSecret/screenshot.png"
+      const resolved = resolveMarkdownImageSrc(sibling, PROJECT)
+      expect(resolved).not.toMatch(/^file:/i)
+      expect(resolved).not.toMatch(/^tauri-asset:/)
+      expect(resolved).not.toContain("MyWikiSecret")
+    })
+
+    it("does not convert a file: URL that climbs out of the project", () => {
+      const src = "file:///Users/me/MyWiki/../../../etc/shadow.png"
+      const resolved = resolveMarkdownImageSrc(src, PROJECT)
+      expect(resolved).not.toMatch(/^file:/i)
+      expect(resolved).not.toMatch(/^tauri-asset:/)
+    })
+
+    it("does not convert a Windows file: URL outside the project", () => {
+      const resolved = resolveMarkdownImageSrc(
+        "file:///C:/Users/me/Pictures/x.png",
+        "C:/Users/me/MyWiki",
+      )
+      expect(resolved).not.toMatch(/^file:/i)
+      expect(resolved).not.toMatch(/^tauri-asset:/)
+      expect(resolved).not.toContain("Pictures")
+    })
+
+    it("converts an in-project file: URL through the asset protocol", () => {
+      expect(
+        resolveMarkdownImageSrc("file:///Users/me/MyWiki/wiki/media/x.png", PROJECT),
+      ).toBe("tauri-asset:/Users/me/MyWiki/wiki/media/x.png")
+    })
+
+    it("converts an in-project Windows file: URL through the asset protocol", () => {
+      expect(
+        resolveMarkdownImageSrc(
+          "file:///C:/Users/me/MyWiki/wiki/media/x.png",
+          "C:/Users/me/MyWiki",
+        ),
+      ).toBe("tauri-asset:C:/Users/me/MyWiki/wiki/media/x.png")
+    })
+
+    it("does not pass through a file: URL when no project is loaded", () => {
+      const resolved = resolveMarkdownImageSrc("file:///etc/passwd", null)
+      expect(resolved).not.toMatch(/^file:/i)
+      expect(resolved).not.toContain("/etc/passwd")
+    })
+  })
+
   it("returns the raw src unchanged when no project is loaded", () => {
     // Resolver is intentionally safe to call before a project is
     // open — preview surfaces (welcome screen, settings) might

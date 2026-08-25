@@ -13,7 +13,11 @@
  * Convention we settle on:
  *
  *   - Any src starting with `http://`, `https://`, `data:`, `blob:`,
- *     `file:`, `tauri://` is passed through unchanged.
+ *     or `tauri://` is passed through unchanged.
+ *   - `file:` URLs are treated as local filesystem paths: converted
+ *     only when they resolve inside the current project, otherwise
+ *     dropped. Passing them through would bypass the absolute-path
+ *     project check via the webview's file protocol.
  *   - Any src starting with `/` (absolute) is wrapped with
  *     `convertFileSrc` directly — the path is the filesystem
  *     absolute path.
@@ -37,7 +41,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core"
 import { normalizePath } from "@/lib/path-utils"
 
-const PASSTHROUGH_RE = /^(https?:|data:|blob:|file:|tauri:)/i
+const PASSTHROUGH_RE = /^(https?:|data:|blob:|tauri:)/i
 
 function trimTrailingSlash(path: string): string {
   return path.replace(/\/+$/, "")
@@ -59,6 +63,28 @@ function decodePathSrc(src: string): string {
   } catch {
     return src
   }
+}
+
+/**
+ * Turn a `file:` URL into a filesystem path, or null if it is not a
+ * usable local file URL. Windows drive letters arrive as `/C:/...`.
+ */
+function fileUrlToLocalPath(src: string): string | null {
+  if (!/^file:/i.test(src)) return null
+  try {
+    const url = new URL(src)
+    if (url.protocol.toLowerCase() !== "file:") return null
+    let pathname = decodePathSrc(url.pathname)
+    if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1)
+    return pathname || null
+  } catch {
+    return null
+  }
+}
+
+function resolveInProjectFilePath(localPath: string, projectPath: string): string {
+  const absolute = collapsePath(normalizePath(localPath))
+  return isInsideProject(absolute, projectPath) ? convertFileSrc(absolute) : ""
 }
 
 /**
@@ -85,8 +111,9 @@ function collapsePath(p: string): string {
 
 /**
  * `projectPath` is the wiki project's root directory. When null
- * (no project loaded), the resolver passes srcs through unchanged
- * so it remains safe to call before a project is open.
+ * (no project loaded), relative and remote srcs pass through
+ * unchanged; `file:` URLs are dropped so they cannot load local
+ * files before a project is open.
  *
  * `currentFileDir` is the directory of the markdown file being
  * rendered (absolute, or relative-to-project). When provided,
@@ -101,6 +128,11 @@ export function resolveMarkdownImageSrc(
 ): string {
   if (!rawSrc) return rawSrc
   if (PASSTHROUGH_RE.test(rawSrc)) return rawSrc
+
+  const filePath = fileUrlToLocalPath(rawSrc)
+  if (filePath) {
+    return projectPath ? resolveInProjectFilePath(filePath, projectPath) : ""
+  }
 
   if (!projectPath) return rawSrc
 
