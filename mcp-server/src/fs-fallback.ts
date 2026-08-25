@@ -138,7 +138,10 @@ export function readProjectsFromAppState(): ApiProject[] {
 
 export function readProjectId(projectPath: string): string {
   try {
-    const meta = JSON.parse(fs.readFileSync(path.join(projectPath, ".llm-wiki", "project.json"), "utf8"))
+    // Confine before parse: a project.json or .llm-wiki symlink can otherwise
+    // steal another project's UUID into this MCP session's project list.
+    const metaPath = safeJoinOffline(projectPath, ".llm-wiki/project.json")
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"))
     if (typeof meta?.id === "string") return meta.id
   } catch {
     // fall through

@@ -191,6 +191,74 @@ test("readReviewsOffline refuses a .llm-wiki directory symlink outside the proje
   }
 })
 
+test("readProjectId does not adopt a project.json symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const secret = path.join(outside, "project.json")
+    fs.writeFileSync(secret, JSON.stringify({ id: "stolen-uuid" }))
+    fs.symlinkSync(secret, path.join(root, ".llm-wiki", "project.json"))
+    assert.notEqual(readProjectId(root), "stolen-uuid")
+    assert.equal(readProjectId(root), root)
+    assert.equal(JSON.parse(fs.readFileSync(secret, "utf8")).id, "stolen-uuid")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readProjectId does not adopt a .llm-wiki directory symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-id-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "project.json"),
+      JSON.stringify({ id: "other-project-uuid" }),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(root, ".llm-wiki"))
+    assert.notEqual(readProjectId(root), "other-project-uuid")
+    assert.equal(readProjectId(root), root)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readProjectsFromAppState does not bind a recents entry to a foreign UUID via .llm-wiki symlink", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const gamma = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-gamma-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-id-outside-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "project.json"),
+      JSON.stringify({ id: "stolen-from-outside" }),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(gamma, ".llm-wiki"))
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+      recentProjects: [
+        { name: "Gamma", path: gamma },
+      ],
+    }, () => {
+      const projects = readProjectsFromAppState()
+      assert.equal(projects.some((project) => project.id === "stolen-from-outside"), false)
+      assert.equal(resolveOfflineProjectPath("stolen-from-outside"), null)
+      const gammaEntry = projects.find((project) => project.path === gamma)
+      assert.equal(gammaEntry?.id, gamma)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(gamma, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline parses frontmatter types and wikilinks", () => {
   const graph = buildGraphOffline(projectDir)
   const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
