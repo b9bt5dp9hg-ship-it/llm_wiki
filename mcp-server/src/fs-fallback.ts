@@ -158,8 +158,55 @@ function isAllowedRelPath(relPath: string): boolean {
   return (normalized.startsWith("wiki/") || normalized.startsWith("raw/sources/")) && isAllowedExtension(normalized)
 }
 
+function isResolvedInside(rootReal: string, candidateReal: string): boolean {
+  if (candidateReal === rootReal) return true
+  const prefix = rootReal.endsWith(path.sep) ? rootReal : rootReal + path.sep
+  return candidateReal.startsWith(prefix)
+}
+
+/**
+ * Mirror of the desktop API `safe_join`: lexically reject traversal, then
+ * canonicalize so a wiki/sources symlink cannot read a file outside the
+ * project. Existing in-project targets stay allowed, matching the API.
+ */
+function safeJoinOffline(projectPath: string, relPath: string): string {
+  const normalizedRel = relPath.replace(/\\/g, "/").replace(/^\/+/, "")
+  if (!normalizedRel) {
+    throw new Error("Path traversal is not allowed")
+  }
+  if (path.isAbsolute(normalizedRel) || /^[a-zA-Z]:/.test(normalizedRel)) {
+    throw new Error("Absolute paths are not allowed")
+  }
+  const segments = normalizedRel.split("/").filter((seg) => seg !== ".")
+  if (segments.some((seg) => seg === "" || seg === "..")) {
+    throw new Error("Path traversal is not allowed")
+  }
+  const rootReal = fs.realpathSync(projectPath)
+  const joined = path.resolve(projectPath, ...segments)
+  if (fs.existsSync(joined)) {
+    const joinedReal = fs.realpathSync(joined)
+    if (!isResolvedInside(rootReal, joinedReal)) {
+      throw new Error("Resolved path escapes the project directory")
+    }
+    return joinedReal
+  }
+  const parent = path.dirname(joined)
+  if (fs.existsSync(parent)) {
+    const parentReal = fs.realpathSync(parent)
+    if (!isResolvedInside(rootReal, parentReal)) {
+      throw new Error("Resolved parent escapes the project directory")
+    }
+  }
+  return joined
+}
+
 function walkDir(base: string, relRoot: string, recursive: boolean, budget: { left: number }): ApiFileNode[] {
-  const absRoot = path.join(base, relRoot)
+  let absRoot: string
+  try {
+    absRoot = safeJoinOffline(base, relRoot)
+  } catch {
+    return []
+  }
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(absRoot, { withFileTypes: true })
@@ -200,7 +247,7 @@ export function readFileOffline(projectPath: string, relPath: string): { path: s
   if (!isAllowedRelPath(relPath)) {
     throw new Error(`Path not allowed by the offline fallback (wiki/, raw/sources/, purpose.md, schema.md): ${relPath}`)
   }
-  const abs = path.join(projectPath, relPath)
+  const abs = safeJoinOffline(projectPath, relPath)
   const stat = fs.statSync(abs)
   if (stat.size > MAX_FILE_BYTES) {
     throw new Error(`File exceeds the 2 MB limit: ${relPath}`)
@@ -251,7 +298,12 @@ export function readReviewsOffline(
 function collectWikiMarkdown(projectPath: string): Array<{ rel: string; content: string }> {
   const pages: Array<{ rel: string; content: string }> = []
   const walk = (relDir: string) => {
-    const absDir = path.join(projectPath, relDir)
+    let absDir: string
+    try {
+      absDir = safeJoinOffline(projectPath, relDir)
+    } catch {
+      return
+    }
     let entries: fs.Dirent[]
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true })
@@ -265,11 +317,12 @@ function collectWikiMarkdown(projectPath: string): Array<{ rel: string; content:
         walk(rel)
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         try {
-          const stat = fs.statSync(path.join(projectPath, rel))
+          const abs = safeJoinOffline(projectPath, rel)
+          const stat = fs.statSync(abs)
           if (stat.size > MAX_FILE_BYTES) continue
-          pages.push({ rel, content: fs.readFileSync(path.join(projectPath, rel), "utf8") })
+          pages.push({ rel, content: fs.readFileSync(abs, "utf8") })
         } catch {
-          // unreadable page — skip
+          // unreadable or escaped page — skip
         }
       }
     }

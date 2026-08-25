@@ -81,6 +81,63 @@ test("readFileOffline enforces the allow-list", () => {
   assert.throws(() => readFileOffline(projectDir, "wiki/../.llm-wiki/review.json"), /not allowed/)
 })
 
+test("readFileOffline refuses a wiki file symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    const secret = path.join(outside, "secret.txt")
+    fs.writeFileSync(secret, "outside-secret")
+    fs.symlinkSync(secret, path.join(root, "wiki", "escape.md"))
+    assert.throws(
+      () => readFileOffline(root, "wiki/escape.md"),
+      /escapes the project directory/,
+    )
+    assert.equal(fs.readFileSync(secret, "utf8"), "outside-secret")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readFileOffline refuses a wiki path whose parent directory is a symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.mkdirSync(path.join(outside, "wiki"), { recursive: true })
+    fs.writeFileSync(path.join(outside, "wiki", "page.md"), "leaked-from-other-project")
+    fs.symlinkSync(path.join(outside, "wiki"), path.join(root, "wiki", "linked"))
+    assert.throws(
+      () => readFileOffline(root, "wiki/linked/page.md"),
+      /escapes the project directory/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("listFilesOffline and searchOffline do not follow a wiki root symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-wiki-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-wiki-src-"))
+  try {
+    fs.mkdirSync(path.join(outside, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, "wiki", "secret.md"),
+      "---\ntitle: Secret\n---\n\nOutside wiki body.\n",
+    )
+    fs.symlinkSync(path.join(outside, "wiki"), path.join(root, "wiki"))
+    const listed = JSON.stringify(listFilesOffline(root, { root: "wiki" }).files)
+    assert.equal(listed.includes("secret"), false)
+    const search = searchOffline(root, "Secret")
+    assert.equal(search.results.some((hit) => hit.path.includes("secret")), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test("readReviewsOffline defaults to unresolved and backfills ids", () => {
   const unresolved = readReviewsOffline(projectDir)
   assert.equal(unresolved.count, 1)
