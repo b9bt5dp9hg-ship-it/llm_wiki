@@ -37,6 +37,7 @@ import { collectAllFilesIncludingDot } from "@/lib/sources-tree-delete"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { isSensitiveConfigSourceFile } from "@/lib/source-filter"
 import { naturalCompare } from "@/lib/natural-sort"
+import { withProjectLock } from "@/lib/project-mutex"
 import type { SourceWatchConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { preprocessSourceFiles } from "@/lib/source-preprocess"
@@ -609,30 +610,47 @@ export async function cleanupDeletedWikiPages(
   }
 }
 
+const reservedDestPaths = new Set<string>()
+
+export function __resetUniqueDestReservationsForTesting(): void {
+  reservedDestPaths.clear()
+}
+
+function destIsReserved(path: string): boolean {
+  return reservedDestPaths.has(normalizePath(path))
+}
+
+function reserveDestPath(path: string): string {
+  reservedDestPaths.add(normalizePath(path))
+  return path
+}
+
 export async function getUniqueDestPath(dir: string, fileName: string): Promise<string> {
-  const basePath = `${dir}/${fileName}`
-
-  if (!(await fileExists(basePath))) {
-    return basePath
-  }
-
-  const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ""
-  const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
-
-  const withDate = `${dir}/${nameWithoutExt}-${date}${ext}`
-  if (!(await fileExists(withDate))) {
-    return withDate
-  }
-
-  for (let i = 2; i <= 99; i++) {
-    const withCounter = `${dir}/${nameWithoutExt}-${date}-${i}${ext}`
-    if (!(await fileExists(withCounter))) {
-      return withCounter
+  const dirNorm = normalizePath(dir)
+  return withProjectLock(`${dirNorm}\0unique-dest`, async () => {
+    const basePath = `${dir}/${fileName}`
+    if (!destIsReserved(basePath) && !(await fileExists(basePath))) {
+      return reserveDestPath(basePath)
     }
-  }
 
-  return `${dir}/${nameWithoutExt}-${date}-${Date.now()}${ext}`
+    const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ""
+    const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+
+    const withDate = `${dir}/${nameWithoutExt}-${date}${ext}`
+    if (!destIsReserved(withDate) && !(await fileExists(withDate))) {
+      return reserveDestPath(withDate)
+    }
+
+    for (let i = 2; i <= 99; i++) {
+      const withCounter = `${dir}/${nameWithoutExt}-${date}-${i}${ext}`
+      if (!destIsReserved(withCounter) && !(await fileExists(withCounter))) {
+        return reserveDestPath(withCounter)
+      }
+    }
+
+    return reserveDestPath(`${dir}/${nameWithoutExt}-${date}-${Date.now()}${ext}`)
+  })
 }
 
 async function appendSourceDeleteLog(

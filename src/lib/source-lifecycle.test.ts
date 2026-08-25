@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
 
 const mocks = vi.hoisted(() => ({
   copyFile: vi.fn(),
@@ -33,10 +34,13 @@ vi.mock("@/lib/ingest-queue", () => ({
 import {
   enqueueSourceIngest,
   folderContextForSourcePath,
+  getUniqueDestPath,
   importSourceFiles,
   importSourceFolder,
   isIngestableSourcePath,
+  __resetUniqueDestReservationsForTesting,
 } from "./source-lifecycle"
+import { __resetProjectLocksForTesting } from "./project-mutex"
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -48,6 +52,8 @@ beforeEach(() => {
   mocks.listDirectory.mockResolvedValue([])
   mocks.preprocessFile.mockResolvedValue("")
   mocks.enqueueBatch.mockResolvedValue(["task"])
+  __resetProjectLocksForTesting()
+  __resetUniqueDestReservationsForTesting()
 })
 
 describe("source-lifecycle path helpers", () => {
@@ -77,6 +83,34 @@ describe("source-lifecycle path helpers", () => {
     expect(
       folderContextForSourcePath("/tmp/project/raw/sources/reports/2026/report.pdf"),
     ).toBe("reports > 2026")
+  })
+
+  it("does not hand two overlapping imports the same destination path", async () => {
+    const firstExistsStarted = createDeferred<void>()
+    const releaseFirstExists = createDeferred<void>()
+    let existsCalls = 0
+    mocks.fileExists.mockImplementation(async (path: string) => {
+      if (path.endsWith("/note.pdf")) {
+        existsCalls += 1
+        if (existsCalls === 1) {
+          firstExistsStarted.resolve()
+          await releaseFirstExists.promise
+        }
+      }
+      return false
+    })
+
+    const first = getUniqueDestPath("/proj/raw/sources", "note.pdf")
+    await firstExistsStarted.promise
+    const second = getUniqueDestPath("/proj/raw/sources", "note.pdf")
+    await flushMicrotasks()
+    releaseFirstExists.resolve()
+    const [a, b] = await Promise.all([first, second])
+    expect(a).not.toEqual(b)
+    expect(new Set([a, b])).toEqual(new Set([
+      "/proj/raw/sources/note.pdf",
+      `/proj/raw/sources/note-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}.pdf`,
+    ]))
   })
 
   it("applies source watch exclusions during folder import before preprocess and ingest", async () => {
