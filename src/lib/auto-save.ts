@@ -8,6 +8,38 @@ let reviewTimer: ReturnType<typeof setTimeout> | null = null
 let lintTimer: ReturnType<typeof setTimeout> | null = null
 let chatTimer: ReturnType<typeof setTimeout> | null = null
 
+// Debounced saves and flush must not overlap. An older write that started
+// before flushAndSuspendAutoSave() can otherwise finish last and replace the
+// outgoing snapshot with stale data. One chain per area keeps that order.
+const reviewWrites = createSerialQueue()
+const lintWrites = createSerialQueue()
+const chatWrites = createSerialQueue()
+
+function createSerialQueue(): { enqueue: (job: () => Promise<unknown>) => Promise<unknown> } {
+  let tail: Promise<unknown> = Promise.resolve()
+  let pending = 0
+  return {
+    enqueue(job: () => Promise<unknown>): Promise<unknown> {
+      pending++
+      let run: Promise<unknown>
+      if (pending === 1) {
+        try {
+          run = Promise.resolve(job())
+        } catch (err) {
+          run = Promise.reject(err)
+        }
+      } else {
+        run = tail.then(job)
+      }
+      tail = run.then(
+        () => { pending-- },
+        () => { pending-- },
+      )
+      return run
+    },
+  }
+}
+
 // While suspended, the store subscriptions skip writing. This is essential
 // during a project switch: resetProjectState() clears every store to empty,
 // and without this guard the debounced callbacks would persist those empty
@@ -42,19 +74,19 @@ export async function flushAndSuspendAutoSave(): Promise<void> {
   const lint = useLintStore.getState().items
   const chat = useChatStore.getState()
   const jobs: Array<[string, Promise<unknown>]> = [
-    ["review", saveReviewItems(projectPath, review)],
-    ["lint", saveLintItems(projectPath, lint)],
-    ["chat preferences", saveChatPreferences(projectPath, {
+    ["review", reviewWrites.enqueue(() => saveReviewItems(projectPath, review))],
+    ["lint", lintWrites.enqueue(() => saveLintItems(projectPath, lint))],
+    ["chat preferences", chatWrites.enqueue(() => saveChatPreferences(projectPath, {
       useWebSearch: chat.useWebSearch,
       useAnyTxtSearch: chat.useAnyTxtSearch,
       agentMode: chat.agentMode,
       retrievalMode: chat.retrievalMode,
       selectedSkills: chat.selectedSkills,
       disabledSkills: chat.disabledSkills,
-    })],
+    }))],
   ]
   if (!chat.isStreaming) {
-    jobs.push(["chat history", saveChatHistory(projectPath, chat.conversations, chat.messages)])
+    jobs.push(["chat history", chatWrites.enqueue(() => saveChatHistory(projectPath, chat.conversations, chat.messages))])
   }
   const results = await Promise.allSettled(jobs.map(([, job]) => job))
   const failures = results.flatMap((result, i) => {
@@ -105,8 +137,9 @@ export function setupAutoSave(): void {
     const projectPath = useWikiStore.getState().project?.path
     if (reviewTimer) clearTimeout(reviewTimer)
     reviewTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        saveReviewItems(projectPath, state.items).catch(() => {})
+        reviewWrites.enqueue(() => saveReviewItems(projectPath, state.items)).catch(() => {})
       }
     }, 1000)
   })
@@ -117,8 +150,9 @@ export function setupAutoSave(): void {
     const projectPath = useWikiStore.getState().project?.path
     if (lintTimer) clearTimeout(lintTimer)
     lintTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        saveLintItems(projectPath, state.items).catch(() => {})
+        lintWrites.enqueue(() => saveLintItems(projectPath, state.items)).catch(() => {})
       }
     }, 1000)
   })
@@ -138,8 +172,9 @@ export function setupAutoSave(): void {
     const projectPath = useWikiStore.getState().project?.path
     if (chatTimer) clearTimeout(chatTimer)
     chatTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        Promise.allSettled([
+        chatWrites.enqueue(() => Promise.allSettled([
           saveChatPreferences(projectPath, {
             useWebSearch: state.useWebSearch,
             useAnyTxtSearch: state.useAnyTxtSearch,
@@ -149,7 +184,7 @@ export function setupAutoSave(): void {
             disabledSkills: state.disabledSkills,
           }),
           saveChatHistory(projectPath, state.conversations, state.messages),
-        ]).catch(() => {})
+        ])).catch(() => {})
       }
     }, 2000)
   })

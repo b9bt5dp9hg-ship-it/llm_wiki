@@ -32,6 +32,7 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import type { ReviewItem } from "@/stores/review-store"
+import { createDeferred } from "@/test-helpers/deferred"
 
 function setProjectPath(path: string | null): void {
   useWikiStore.setState({ project: path ? ({ id: "p", name: "p", path } as never) : null })
@@ -87,9 +88,9 @@ describe("auto-save project-switch guard", () => {
     expect(saveLintItems).not.toHaveBeenCalled()
   })
 
-  it("resumes persisting after resumeAutoSave", () => {
+  it("resumes persisting after resumeAutoSave", async () => {
     setProjectPath("/proj/B")
-    flushAndSuspendAutoSave()
+    await flushAndSuspendAutoSave()
     resumeAutoSave()
 
     useReviewStore.setState({ items: [review("b1")] })
@@ -232,5 +233,33 @@ describe("auto-save project-switch guard", () => {
 
     expect(saveChatHistory).not.toHaveBeenCalled()
     expect(saveChatPreferences).not.toHaveBeenCalled()
+  })
+
+  it("does not let an in-flight review write overwrite the flush snapshot", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("old")] })
+
+    const inFlight = createDeferred<void>()
+    saveReviewItems.mockImplementationOnce(() => inFlight.promise)
+    vi.runAllTimers()
+    expect(saveReviewItems).toHaveBeenCalledTimes(1)
+    expect(saveReviewItems).toHaveBeenCalledWith("/proj/A", [review("old")])
+
+    useReviewStore.setState({ items: [review("new")] })
+    let flushSettled = false
+    const flushPromise = flushAndSuspendAutoSave().then(() => {
+      flushSettled = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(flushSettled).toBe(false)
+    expect(saveReviewItems).toHaveBeenCalledTimes(1)
+
+    inFlight.resolve()
+    await flushPromise
+
+    expect(flushSettled).toBe(true)
+    expect(saveReviewItems).toHaveBeenLastCalledWith("/proj/A", [review("new")])
   })
 })
