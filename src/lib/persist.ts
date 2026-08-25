@@ -336,9 +336,11 @@ function conversationFromMessages(id: string, messages: DisplayMessage[]): Conve
 
 async function recoverChatHistoryFromOrphanChatFiles(projectPath: string): Promise<PersistedChatData> {
   try {
-    const chatDir = `${projectPath}/.llm-wiki/chats`
-    const files = flattenFiles(await listDirectory(chatDir))
-      .filter((node) => node.name.endsWith(".json"))
+    const chatDir = `${normalizePath(projectPath)}/.llm-wiki/chats`
+    // Direct children only. Nested leftovers (and directory symlinks under
+    // chats/) must not rebuild a conversation the user already deleted.
+    const files = (await listDirectory(chatDir))
+      .filter((node) => !node.is_dir && node.name.toLowerCase().endsWith(".json"))
       .sort((a, b) => a.name.localeCompare(b.name))
     const conversations: Conversation[] = []
     const allMessages: DisplayMessage[] = []
@@ -346,14 +348,16 @@ async function recoverChatHistoryFromOrphanChatFiles(projectPath: string): Promi
 
     for (const file of files) {
       try {
-        const raw = await readFile(file.path)
-        const parsed = JSON.parse(raw)
-        if (!Array.isArray(parsed)) continue
         const rawId = file.name.replace(/\.json$/i, "")
         if (!isSafeConversationId(rawId)) continue
         const id = canonicalizeConversationId(rawId)
         if (seen.has(id)) continue
+        const chatPath = conversationChatFilePath(projectPath, id)
+        if (!chatPath) continue
         seen.add(id)
+        const raw = await readFile(chatPath)
+        const parsed = JSON.parse(raw)
+        if (!Array.isArray(parsed)) continue
         const messages = (parsed as DisplayMessage[])
           .filter((message) => message && typeof message === "object")
           .map((message) => ({

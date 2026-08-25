@@ -442,6 +442,24 @@ describe("chat persistence — round-trip (new format)", () => {
     expect(loaded.messages).toEqual([])
   })
 
+  it("does not resurrect a deleted chat from a nested leftover under chats/", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "canonical")])
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/archive/c1.json`,
+      JSON.stringify([makeMsg("m-nested", "c1", "nested-resurrect")]),
+    )
+
+    await saveChatHistory(tmp.path, [], [])
+
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/archive/c1.json`)).toBe(true)
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([])
+    expect(loaded.messages).toEqual([])
+    expect(JSON.stringify(loaded)).not.toContain("nested-resurrect")
+  })
+
   it("deletePersistedConversation removes the chat file and ignores a missing file", async () => {
     await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "bye")])
     await deletePersistedConversation(tmp.path, "c1")
