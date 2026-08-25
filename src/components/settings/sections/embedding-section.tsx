@@ -15,7 +15,38 @@ import {
   subscribeEmbeddingReindexState,
 } from "@/lib/embedding"
 import { testEmbeddingConnection, testEmbeddingFunction, type ProviderTestResult } from "@/lib/connection-tests"
+import { saveEmbeddingConfig } from "@/lib/project-store"
 import type { SettingsDraft, DraftSetter } from "../settings-types"
+
+type EmbeddingDraftFields = Pick<
+  SettingsDraft,
+  | "embeddingEnabled"
+  | "embeddingEndpoint"
+  | "embeddingApiKey"
+  | "embeddingModel"
+  | "embeddingOutputDimensionality"
+  | "embeddingMaxChunkChars"
+  | "embeddingOverlapChunkChars"
+  | "embeddingConcurrency"
+  | "embeddingBatchSize"
+  | "embeddingExtraHeaders"
+>
+
+/** Map the on-screen settings draft to the embedding config used by reindex. */
+export function embeddingConfigFromDraft(draft: EmbeddingDraftFields): EmbeddingConfig {
+  return {
+    enabled: draft.embeddingEnabled,
+    endpoint: draft.embeddingEndpoint,
+    apiKey: draft.embeddingApiKey,
+    model: draft.embeddingModel,
+    outputDimensionality: draft.embeddingOutputDimensionality,
+    maxChunkChars: draft.embeddingMaxChunkChars,
+    overlapChunkChars: draft.embeddingOverlapChunkChars,
+    concurrency: Math.max(1, Math.min(32, Math.floor(draft.embeddingConcurrency || 1))),
+    batchSize: Math.max(1, Math.min(64, Math.floor(draft.embeddingBatchSize || 1))),
+    extraHeaders: draft.embeddingExtraHeaders,
+  }
+}
 
 interface Props {
   draft: SettingsDraft
@@ -80,7 +111,6 @@ function parseHeadersText(text: string): Record<string, string> {
 export function EmbeddingSection({ draft, setDraft }: Props) {
   const { t } = useTranslation()
   const project = useWikiStore((s) => s.project)
-  const embeddingConfig = useWikiStore((s) => s.embeddingConfig)
 
   const [chunkCount, setChunkCount] = useState<number | null>(null)
   const [legacyCount, setLegacyCount] = useState<number>(0)
@@ -119,10 +149,14 @@ export function EmbeddingSection({ draft, setDraft }: Props) {
 
   const handleReindex = useCallback(async () => {
     if (!project) return
+    const config = embeddingConfigFromDraft(draft)
     try {
+      // Persist the visible draft first so later loads match these vectors.
+      // Skip setEmbeddingConfig: SettingsView would resync and drop other drafts.
+      await saveEmbeddingConfig(config)
       await embedAllPages(
         project.path,
-        embeddingConfig,
+        config,
         undefined,
         { clearExisting: true },
       )
@@ -130,7 +164,7 @@ export function EmbeddingSection({ draft, setDraft }: Props) {
     } catch (err) {
       await refreshStats()
     }
-  }, [project, embeddingConfig, refreshStats])
+  }, [project, draft, refreshStats])
 
   const handleDropLegacy = useCallback(async () => {
     if (!project) return
@@ -139,18 +173,7 @@ export function EmbeddingSection({ draft, setDraft }: Props) {
     setLegacyDropped(true)
   }, [project])
 
-  const draftEmbeddingConfig: EmbeddingConfig = {
-    enabled: draft.embeddingEnabled,
-    endpoint: draft.embeddingEndpoint,
-    apiKey: draft.embeddingApiKey,
-    model: draft.embeddingModel,
-    outputDimensionality: draft.embeddingOutputDimensionality,
-    maxChunkChars: draft.embeddingMaxChunkChars,
-    overlapChunkChars: draft.embeddingOverlapChunkChars,
-    concurrency: draft.embeddingConcurrency,
-    batchSize: draft.embeddingBatchSize,
-    extraHeaders: draft.embeddingExtraHeaders,
-  }
+  const draftEmbeddingConfig = embeddingConfigFromDraft(draft)
 
   async function runEmbeddingTest(kind: "connection" | "function") {
     setTestState({
