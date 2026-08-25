@@ -254,6 +254,40 @@ function walkDir(base: string, relRoot: string, recursive: boolean, budget: { le
   return nodes
 }
 
+/** Same public roots as desktop `list_public_roots`: purpose.md, schema.md, wiki/, raw/sources/. */
+function listPublicRootNode(
+  projectPath: string,
+  rel: string,
+  recursive: boolean,
+  budget: { left: number },
+): ApiFileNode | null {
+  let abs: string
+  try {
+    abs = safeJoinOffline(projectPath, rel)
+  } catch {
+    return null
+  }
+  let stat: fs.Stats
+  try {
+    stat = fs.lstatSync(abs)
+  } catch {
+    return null
+  }
+  if (stat.isSymbolicLink()) return null
+  const posix = rel.replace(/\\/g, "/")
+  const name = path.posix.basename(posix)
+  if (stat.isFile()) {
+    if (budget.left <= 0) return null
+    budget.left--
+    return { name, path: posix, isDir: false }
+  }
+  if (stat.isDirectory()) {
+    const children = recursive ? walkDir(projectPath, posix, recursive, budget) : undefined
+    return { name, path: posix, isDir: true, ...(children ? { children } : {}) }
+  }
+  return null
+}
+
 export function listFilesOffline(
   projectPath: string,
   options: { root?: "wiki" | "sources" | "all"; recursive?: boolean; maxFiles?: number } = {},
@@ -262,8 +296,14 @@ export function listFilesOffline(
   const recursive = options.recursive ?? true
   const budget = { left: Math.max(1, Math.min(options.maxFiles ?? DEFAULT_MAX_FILES, DEFAULT_MAX_FILES)) }
   const files: ApiFileNode[] = []
-  if (root === "wiki" || root === "all") files.push(...walkDir(projectPath, "wiki", recursive, budget))
-  if (root === "sources" || root === "all") files.push(...walkDir(projectPath, "raw/sources", recursive, budget))
+  if (root === "all") {
+    for (const rel of ["purpose.md", "schema.md", "wiki", "raw/sources"] as const) {
+      const node = listPublicRootNode(projectPath, rel, recursive, budget)
+      if (node) files.push(node)
+    }
+  } else {
+    files.push(...walkDir(projectPath, root === "sources" ? "raw/sources" : "wiki", recursive, budget))
+  }
   return { files, truncated: budget.left <= 0 }
 }
 

@@ -74,6 +74,37 @@ test("listFilesOffline lists wiki and sources roots", () => {
   assert.ok(JSON.stringify(all.files).includes("raw/sources/mail/brief.txt"))
 })
 
+test("listFilesOffline root=all matches live-API public roots including purpose.md and schema.md", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-files-all-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.mkdirSync(path.join(root, "raw", "sources"), { recursive: true })
+    fs.writeFileSync(path.join(root, "purpose.md"), "# Purpose\n")
+    fs.writeFileSync(path.join(root, "schema.md"), "# Schema\n")
+    fs.writeFileSync(path.join(root, "wiki", "page.md"), "page")
+    fs.writeFileSync(path.join(root, "raw", "sources", "note.txt"), "note")
+
+    const listed = listFilesOffline(root, { root: "all" })
+    assert.deepEqual(
+      listed.files.map((node) => ({ name: node.name, path: node.path, isDir: node.isDir })),
+      [
+        { name: "purpose.md", path: "purpose.md", isDir: false },
+        { name: "schema.md", path: "schema.md", isDir: false },
+        { name: "wiki", path: "wiki", isDir: true },
+        { name: "sources", path: "raw/sources", isDir: true },
+      ],
+    )
+    assert.ok(listed.files[2]?.children?.some((child) => child.path === "wiki/page.md"))
+    assert.ok(listed.files[3]?.children?.some((child) => child.path === "raw/sources/note.txt"))
+
+    const wikiOnly = listFilesOffline(root, { root: "wiki" })
+    assert.equal(wikiOnly.files.some((node) => node.path === "purpose.md"), false)
+    assert.ok(wikiOnly.files.some((node) => node.path === "wiki/page.md"))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("readFileOffline enforces the allow-list", () => {
   assert.ok(readFileOffline(projectDir, "wiki/alpha.md").content.includes("Alpha"))
   assert.ok(readFileOffline(projectDir, "purpose.md").content.includes("Purpose"))
