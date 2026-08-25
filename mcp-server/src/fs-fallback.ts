@@ -115,7 +115,9 @@ export function readProjectsFromAppState(): ApiProject[] {
 
     for (const [key, entry] of Object.entries(registry ?? {})) {
       if (!entry?.path) continue
-      add(typeof entry.id === "string" && entry.id ? entry.id : key, entry.name, entry.path)
+      // Registry map key is canonical, matching the desktop API. A stale
+      // nested entry.id must not remap another project's UUID onto this path.
+      add(key, entry.name, entry.path)
     }
     if (Array.isArray(recents)) {
       for (const entry of recents) {

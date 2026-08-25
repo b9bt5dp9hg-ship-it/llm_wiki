@@ -392,3 +392,28 @@ test("readProjectsFromAppState uses the registry key as id and includes recentPr
     fs.rmSync(gamma, { recursive: true, force: true })
   }
 })
+
+test("readProjectsFromAppState prefers the registry key over a stale nested entry.id", () => {
+  const coding = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-coding-"))
+  const personal = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-personal-"))
+  try {
+    withAppState({
+      lastProject: { id: "uuid-personal", name: "Personal", path: personal },
+      projectRegistry: {
+        "uuid-coding": { id: "uuid-personal", name: "Coding", path: coding, lastOpened: 1 },
+        "uuid-personal": { id: "uuid-personal", name: "Personal", path: personal, lastOpened: 2 },
+      },
+    }, () => {
+      const projects = readProjectsFromAppState()
+      const byId = Object.fromEntries(projects.map((project) => [project.id, project]))
+      assert.equal(byId["uuid-coding"]?.path, coding)
+      assert.equal(byId["uuid-personal"]?.path, personal)
+      assert.equal(resolveOfflineProjectPath("uuid-coding"), coding)
+      assert.equal(resolveOfflineProjectPath("uuid-personal"), personal)
+      assert.equal(findOfflineProject("uuid-personal")?.path, personal)
+    })
+  } finally {
+    fs.rmSync(coding, { recursive: true, force: true })
+    fs.rmSync(personal, { recursive: true, force: true })
+  }
+})
