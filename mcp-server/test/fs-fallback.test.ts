@@ -464,6 +464,35 @@ test("buildGraphOffline counts a repeated wikilink as one unique edge, matching 
   }
 })
 
+test("buildGraphOffline resolves spaced wikilinks onto dashed stems like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-dash-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[Foo Bar]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "foo-bar.md"),
+      "---\ntitle: Foo Bar\ntype: concept\n---\n\nNo outgoing links.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const foo = graph.nodes.find((node) => node.id === "foo-bar")
+    assert.ok(alpha && foo)
+    assert.equal(graph.edges.length, 1)
+    assert.deepEqual(
+      [graph.edges[0].source, graph.edges[0].target].sort(),
+      ["alpha", "foo-bar"],
+    )
+    assert.equal(alpha.linkCount, 1)
+    assert.equal(foo.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline truncates by id order with live-API limit default and clamp", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-limit-"))
   try {

@@ -636,12 +636,20 @@ export function buildGraphOffline(
   const byLower = new Map<string, string>()
   for (const id of raw.keys()) byLower.set(id.toLowerCase(), id)
 
+  const resolveLink = (rawLink: string): string | undefined => {
+    const trimmed = rawLink.trim()
+    if (!trimmed) return undefined
+    if (raw.has(trimmed)) return trimmed
+    const lower = pageStem(trimmed)
+    return byLower.get(lower) ?? byLower.get(lower.replace(/ /g, "-"))
+  }
+
   const linkCounts = new Map<string, number>()
   const edges: ApiGraphEdge[] = []
   const seenEdges = new Set<string>()
   for (const [source, page] of raw) {
     for (const match of page.content.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)) {
-      const target = byLower.get(pageStem(match[1].trim()))
+      const target = resolveLink(match[1])
       if (!target || target === source) continue
       const key = source < target ? `${source}\0${target}` : `${target}\0${source}`
       if (seenEdges.has(key)) continue
