@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect, useRef } from "react"
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, useId } from "react"
 import { Search, FileText, ImageIcon, X, ArrowUpRight } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
 import { readFile } from "@/commands/fs"
@@ -8,6 +8,7 @@ import { normalizePath } from "@/lib/path-utils"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { isImeComposing } from "@/lib/keyboard-utils"
+import { lightboxDialogAria, searchFieldAria, trapTabInContainer } from "./search-a11y"
 
 /**
  * One image hit displayed in the Images section.
@@ -207,7 +208,7 @@ export function SearchView() {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
-            type="text"
+            type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -215,6 +216,7 @@ export function SearchView() {
               if (e.key === "Enter") doSearch(query)
             }}
             placeholder={t("search.placeholderWithShortcut")}
+            {...searchFieldAria(t("search.title"))}
             className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
@@ -352,18 +354,30 @@ function Lightbox({
   onJumpToSource: () => void
 }) {
   const { t } = useTranslation()
-  // Escape-to-close. Body-scroll-lock while open: a long search-
-  // results list scrolling underneath the modal is disorienting.
-  useEffect(() => {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  // Escape-to-close, Tab cycle, and restore focus to the thumbnail
+  // that opened the dialog. Body-scroll-lock while open: a long
+  // search-results list scrolling underneath is disorienting.
+  useLayoutEffect(() => {
+    const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+        return
+      }
+      const dialog = dialogRef.current
+      if (dialog) trapTabInContainer(e, dialog)
     }
     document.addEventListener("keydown", onKey)
     const prev = document.body.style.overflow
     document.body.style.overflow = "hidden"
+    dialogRef.current?.focus()
     return () => {
       document.removeEventListener("keydown", onKey)
       document.body.style.overflow = prev
+      restore?.focus()
     }
   }, [onClose])
 
@@ -373,22 +387,21 @@ function Lightbox({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={onClose}
-      // Backdrop is the click target; the inner card stops
-      // propagation so clicks inside don't accidentally close.
-      role="dialog"
-      aria-modal="true"
     >
       <div
-        className="flex max-h-[90vh] w-[90vw] max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-xl"
+        ref={dialogRef}
+        tabIndex={-1}
+        className="flex max-h-[90vh] w-[90vw] max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
+        {...lightboxDialogAria(titleId)}
       >
         {/* Header strip — caption + close button. */}
         <div className="flex items-start justify-between gap-3 border-b px-4 py-2.5">
           <div className="min-w-0 flex-1">
             {hit.alt ? (
-              <div className="line-clamp-3 text-sm leading-snug">{hit.alt}</div>
+              <div id={titleId} className="line-clamp-3 text-sm leading-snug">{hit.alt}</div>
             ) : (
-              <div className="text-sm italic text-muted-foreground">{t("search.noCaption")}</div>
+              <div id={titleId} className="text-sm italic text-muted-foreground">{t("search.noCaption")}</div>
             )}
             <div className="mt-1 truncate text-[11px] text-muted-foreground">
               {t("search.fromSource", { source: hit.sourceTitle })}
