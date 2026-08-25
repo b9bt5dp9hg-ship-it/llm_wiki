@@ -106,7 +106,7 @@ describe("cascadeDeleteWikiPage", () => {
     // slug derivation MUST cope with both separators in one string.
     await cascadeDeleteWikiPage("C:/proj", "C:\\proj\\wiki\\entities\\transformer.md")
 
-    expect(mockDeleteFile).toHaveBeenCalledWith("C:\\proj\\wiki\\entities\\transformer.md")
+    expect(mockDeleteFile).toHaveBeenCalledWith("C:/proj/wiki/entities/transformer.md")
     expect(mockRemovePageEmbedding).toHaveBeenCalledWith("C:/proj", "transformer")
   })
 
@@ -119,12 +119,12 @@ describe("cascadeDeleteWikiPage", () => {
   })
 
   it("skips removePageEmbedding when slug derivation yields empty (defensive)", async () => {
-    // Edge case: a path that's just "/" or empty would yield ""
-    // slug. Calling removePageEmbedding("") could match every page
-    // in some LanceDB filter implementations, which would be
-    // catastrophic. The helper guards against this.
-    await cascadeDeleteWikiPage("/proj", "/")
-    expect(mockDeleteFile).toHaveBeenCalled()
+    // "/" is also outside wiki/, so confinement rejects it before
+    // deleteFile or a LanceDB slug lookup can run.
+    await expect(cascadeDeleteWikiPage("/proj", "/")).rejects.toThrow(
+      /must stay inside the project wiki/,
+    )
+    expect(mockDeleteFile).not.toHaveBeenCalled()
     expect(mockRemovePageEmbedding).not.toHaveBeenCalled()
   })
 
@@ -189,14 +189,15 @@ describe("cascadeDeleteWikiPage", () => {
     await cascadeDeleteWikiPage("/proj", "wiki/sources/rope-paper.md")
 
     expect(mockDeleteFile).toHaveBeenCalledTimes(2)
-    expect(mockDeleteFile).toHaveBeenNthCalledWith(1, "wiki/sources/rope-paper.md")
+    expect(mockDeleteFile).toHaveBeenNthCalledWith(1, "/proj/wiki/sources/rope-paper.md")
     expect(mockDeleteFile).toHaveBeenNthCalledWith(2, "/proj/wiki/media/rope-paper")
   })
 
   it("does NOT cascade media for raw/sources paths that happen to contain /sources/", async () => {
-    await cascadeDeleteWikiPage("/proj", "/proj/raw/sources/paper.md")
-    expect(mockDeleteFile).toHaveBeenCalledTimes(1)
-    expect(mockDeleteFile).toHaveBeenCalledWith("/proj/raw/sources/paper.md")
+    await expect(
+      cascadeDeleteWikiPage("/proj", "/proj/raw/sources/paper.md"),
+    ).rejects.toThrow(/must stay inside the project wiki/)
+    expect(mockDeleteFile).not.toHaveBeenCalled()
   })
 
   it("handles Windows backslash paths in the source-page detection", async () => {
@@ -209,6 +210,7 @@ describe("cascadeDeleteWikiPage", () => {
     )
 
     expect(mockDeleteFile).toHaveBeenCalledTimes(2)
+    expect(mockDeleteFile).toHaveBeenNthCalledWith(1, "C:/proj/wiki/sources/winsrc.md")
     // Second call is the media dir, normalized to forward slashes
     // because we built it from project path + literal path.
     expect(mockDeleteFile).toHaveBeenNthCalledWith(2, "C:/proj/wiki/media/winsrc")
@@ -230,6 +232,37 @@ describe("cascadeDeleteWikiPage", () => {
     await cascadeDeleteWikiPage("/proj", "/proj/wiki/sources/.hidden.md")
     expect(mockDeleteFile).toHaveBeenCalledTimes(1)
     expect(mockDeleteFile).toHaveBeenCalledWith("/proj/wiki/sources/.hidden.md")
+  })
+
+  it("does not delete files outside the project wiki", async () => {
+    await expect(cascadeDeleteWikiPage("/proj", "/etc/passwd")).rejects.toThrow(
+      /must stay inside the project wiki/,
+    )
+    await expect(cascadeDeleteWikiPage("/proj", "/etc/passwd.md")).rejects.toThrow(
+      /must stay inside the project wiki/,
+    )
+    await expect(cascadeDeleteWikiPage("/proj", "/proj/raw/sources/paper.md")).rejects.toThrow(
+      /must stay inside the project wiki/,
+    )
+    await expect(
+      cascadeDeleteWikiPage("/proj", "/proj/wiki/../.llm-wiki/secrets.md"),
+    ).rejects.toThrow(/must stay inside the project wiki/)
+    await expect(
+      cascadeDeleteWikiPage("/proj", "/other/wiki/concepts/rope.md"),
+    ).rejects.toThrow(/must stay inside the project wiki/)
+    await expect(cascadeDeleteWikiPage("/proj", "/")).rejects.toThrow(
+      /must stay inside the project wiki/,
+    )
+
+    expect(mockDeleteFile).not.toHaveBeenCalled()
+    expect(mockRemovePageEmbedding).not.toHaveBeenCalled()
+  })
+
+  it("deletes project-relative wiki pages through the confined path", async () => {
+    await cascadeDeleteWikiPage("/proj", "wiki/concepts/rope.md")
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1)
+    expect(mockDeleteFile).toHaveBeenCalledWith("/proj/wiki/concepts/rope.md")
+    expect(mockRemovePageEmbedding).toHaveBeenCalledWith("/proj", "rope")
   })
 })
 
@@ -494,5 +527,31 @@ describe("cascadeDeleteWikiPagesWithRefs", () => {
     )!
     expect(bobWrite[1]).not.toContain("[[alice-chen]]")
     expect(bobWrite[1]).not.toContain("[[alice-chen-1]]")
+  })
+
+  it("skips escape paths in a mixed batch and never reads them", async () => {
+    const target = `${PROJECT}/wiki/entities/alice-chen.md`
+    mockReadFile.mockImplementation(async (p: string) => {
+      if (p === target) return `---\ntitle: "Alice Chen"\n---\nbody`
+      throw new Error(`unexpected read ${p}`)
+    })
+    mockListDirectory.mockResolvedValueOnce([
+      dirNode("wiki", [
+        dirNode("wiki/entities", [fileNode("wiki/entities/alice-chen.md")]),
+      ]),
+    ])
+
+    const result = await cascadeDeleteWikiPagesWithRefs(PROJECT, [
+      "/etc/passwd.md",
+      `${PROJECT}/raw/sources/paper.md`,
+      `${PROJECT}/wiki/../.llm-wiki/secrets.md`,
+      target,
+    ])
+
+    expect(result.deletedPaths).toEqual([target])
+    expect(mockDeleteFile).toHaveBeenCalledWith(target)
+    expect(mockDeleteFile).not.toHaveBeenCalledWith("/etc/passwd.md")
+    expect(mockReadFile).not.toHaveBeenCalledWith("/etc/passwd.md")
+    expect(mockReadFile).not.toHaveBeenCalledWith(`${PROJECT}/raw/sources/paper.md`)
   })
 })

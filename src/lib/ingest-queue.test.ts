@@ -1427,7 +1427,7 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
     expect(removePageEmbeddingMock).toHaveBeenNthCalledWith(2, "/proj", "transformer")
   })
 
-  it("uses absolute paths verbatim (doesn't double-prefix the project path)", async () => {
+  it("does not delete absolute wiki pages outside the current project", async () => {
     const { deleteFile } = await import("@/commands/fs")
     const mockDeleteFile = vi.mocked(deleteFile)
     mockDeleteFile.mockReset()
@@ -1435,8 +1435,19 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
 
     await cleanupWrittenFiles("/proj", ["/abs/elsewhere/wiki/concepts/foo.md"])
 
-    expect(mockDeleteFile).toHaveBeenCalledWith("/abs/elsewhere/wiki/concepts/foo.md")
-    // Slug derivation still works on absolute paths.
+    expect(mockDeleteFile).not.toHaveBeenCalled()
+    expect(removePageEmbeddingMock).not.toHaveBeenCalled()
+  })
+
+  it("deletes in-project absolute wiki pages without double-prefixing", async () => {
+    const { deleteFile } = await import("@/commands/fs")
+    const mockDeleteFile = vi.mocked(deleteFile)
+    mockDeleteFile.mockReset()
+    mockDeleteFile.mockResolvedValue(undefined)
+
+    await cleanupWrittenFiles("/proj", ["/proj/wiki/concepts/foo.md"])
+
+    expect(mockDeleteFile).toHaveBeenCalledWith("/proj/wiki/concepts/foo.md")
     expect(removePageEmbeddingMock).toHaveBeenCalledWith("/proj", "foo")
   })
 
