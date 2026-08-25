@@ -337,12 +337,50 @@ export function buildGraphOffline(
   return { nodes, edges: edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)) }
 }
 
+const SEARCH_STOP_WORDS = new Set([
+  "的", "是", "了", "什么", "在", "有", "和", "与", "对", "从",
+  "the", "is", "a", "an", "what", "how", "are", "was", "were",
+  "do", "does", "did", "be", "been", "being", "have", "has", "had",
+  "it", "its", "in", "on", "at", "to", "for", "of", "with", "by",
+  "this", "that", "these", "those",
+])
+
+/**
+ * Same tokenizer as the desktop/Rust keyword search: split on
+ * punctuation, drop short/stop tokens, then expand CJK into bigrams
+ * and characters so a query like 默会知识 still hits pages that never
+ * contain that exact four-character span.
+ */
+export function tokenizeOfflineQuery(query: string): string[] {
+  const rawTokens = query
+    .toLowerCase()
+    .split(/[\s,，。！？、；：""''（）()\-_/\\·~～…]+/)
+    .filter((token) => token.length > 1)
+    .filter((token) => !SEARCH_STOP_WORDS.has(token))
+
+  const tokens: string[] = []
+  for (const token of rawTokens) {
+    const hasCjk = /[\u4e00-\u9fff\u3400-\u4dbf]/.test(token)
+    if (hasCjk && token.length > 2) {
+      const chars = [...token]
+      for (let i = 0; i < chars.length - 1; i++) tokens.push(chars[i] + chars[i + 1])
+      for (const ch of chars) {
+        if (!SEARCH_STOP_WORDS.has(ch)) tokens.push(ch)
+      }
+      tokens.push(token)
+    } else {
+      tokens.push(token)
+    }
+  }
+  return [...new Set(tokens)]
+}
+
 export function searchOffline(
   projectPath: string,
   query: string,
   options: { topK?: number } = {},
 ): ApiSearchResponse {
-  const terms = query.toLowerCase().split(/\s+/).filter((term) => term.length > 1)
+  const terms = tokenizeOfflineQuery(query)
   const pages = collectWikiMarkdown(projectPath)
   const results: ApiSearchResult[] = []
   let tokenHits = 0

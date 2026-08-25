@@ -118,6 +118,15 @@ test("searchOffline scores title matches above body matches", () => {
   assert.equal(none.results.length, 0)
 })
 
+test("searchOffline tokenizes CJK queries instead of requiring the whole phrase", () => {
+  fs.writeFileSync(
+    path.join(projectDir, "wiki", "tacit.md"),
+    "---\ntitle: 知识管理\ntype: concept\n---\n\n这段笔记提到默会，但知识两字并不紧挨着默会。\n",
+  )
+  const result = searchOffline(projectDir, "默会知识")
+  assert.ok(result.results.some((hit) => hit.path === "wiki/tacit.md"), "expected CJK bigram hits on a page that never contains the full phrase")
+})
+
 function withAppState<T>(state: unknown, fn: () => T): T {
   const prevState = process.env.LLM_WIKI_APP_STATE
   const prevProject = process.env.LLM_WIKI_PROJECT_PATH
