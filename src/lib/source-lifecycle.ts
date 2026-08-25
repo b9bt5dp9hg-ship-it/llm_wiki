@@ -10,7 +10,7 @@ import {
 } from "@/commands/fs"
 import type { WikiProject, FileNode } from "@/types/wiki"
 import type { LlmConfig } from "@/stores/wiki-store"
-import { enqueueBatch } from "@/lib/ingest-queue"
+import { discardTasksForSources, enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getTaskLlmConfig } from "@/lib/llm-task-routing"
 import { getFileName, getFileStem, getRelativePath, normalizePath } from "@/lib/path-utils"
@@ -420,6 +420,12 @@ export async function deleteSourceFiles(
 
   if (sourceInfos.length === 0) {
     return { deletedWikiPaths: [], rewrittenSourcePages: 0, skippedPages: 0 }
+  }
+
+  try {
+    await discardTasksForSources(sourceInfos.map((info) => info.source))
+  } catch (err) {
+    console.warn("[source-lifecycle] failed to discard ingest tasks for deleted sources:", err)
   }
 
   const deletingNames = new Set(sourceInfos.map((info) => info.fileName.toLowerCase()))

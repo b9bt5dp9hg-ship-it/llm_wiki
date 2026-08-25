@@ -50,6 +50,14 @@ vi.mock("@/lib/project-identity", () => ({
   loadRegistry: vi.fn(),
 }))
 
+vi.mock("@/lib/source-lifecycle", () => ({
+  deleteSourceFiles: vi.fn().mockResolvedValue({
+    deletedWikiPaths: [],
+    rewrittenSourcePages: 0,
+    skippedPages: 0,
+  }),
+}))
+
 import {
   enqueueIngest,
   enqueueBatch,
@@ -569,6 +577,28 @@ describe("ingest-queue — cancel", () => {
     ).toBe(1)
     expect(getQueue().some((task) => task.sourcePath.endsWith("removed.md"))).toBe(false)
     expect(getQueue().some((task) => task.sourcePath.endsWith("active.md"))).toBe(true)
+  })
+
+  it("deletes source-summary writes when a discarded in-flight ingest later completes", async () => {
+    let finishOldRun: ((files: string[]) => void) | undefined
+    mockAutoIngest.mockImplementationOnce(
+      () => new Promise<string[]>((resolve) => {
+        finishOldRun = resolve
+      }),
+    )
+
+    await enqueueIngest(TEST_ID, "raw/sources/removed.md")
+    await flushMicrotasks(2)
+    expect(getQueue()[0]?.status).toBe("processing")
+    mockDeleteFile.mockClear()
+
+    await discardTasksForSources(["raw/sources/removed.md"])
+    finishOldRun?.(["wiki/sources/removed.md", "wiki/concepts/shared.md"])
+
+    await vi.waitFor(() => {
+      expect(mockDeleteFile).toHaveBeenCalledWith(`${TEST_PATH}/wiki/sources/removed.md`)
+    })
+    expect(mockDeleteFile).not.toHaveBeenCalledWith(`${TEST_PATH}/wiki/concepts/shared.md`)
   })
 
   it("cancelTask retains a pending task for restart without calling autoIngest", async () => {

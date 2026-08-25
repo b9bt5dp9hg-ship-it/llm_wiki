@@ -27,6 +27,7 @@ vi.mock("@/commands/fs", async () => {
 
 vi.mock("@/lib/ingest-queue", () => ({
   enqueueBatch: mocks.enqueueBatch,
+  discardTasksForSources: vi.fn().mockResolvedValue(0),
 }))
 
 import {

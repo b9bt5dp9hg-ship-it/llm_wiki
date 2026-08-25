@@ -67,6 +67,10 @@ let currentProjectPath = ""
  * before the old run observes its AbortSignal. In that case the old output
  * must still be discarded before the restarted pending task can run. */
 let cancelledInFlightTaskIds = new Set<string>()
+/** Task runs discarded because their source was deleted. Unlike user
+ *  cancel, completed writes must be undone — otherwise autoIngest can
+ *  recreate wiki pages and ingest-cache entries after the delete. */
+let discardedInFlightTaskIds = new Set<string>()
 let completedSinceIdle = 0
 // Track whether any task has been processed since the last drain.
 // Prevents the sweep from running on every idle/no-op call.
@@ -225,6 +229,31 @@ function confineLiveIngestSourcePath(sourcePath: unknown, projectPath: string): 
 
 function sameQueuedSourcePath(a: string, b: string): boolean {
   return normalizeSourcePathForQueue(a) === normalizeSourcePathForQueue(b)
+}
+
+function isSourceSummaryWikiPath(filePath: string): boolean {
+  const normalized = normalizePath(filePath).replace(/\\/g, "/")
+  return normalized.includes("/wiki/sources/") || normalized.startsWith("wiki/sources/")
+}
+
+async function undoDiscardedSourceIngest(
+  projectPath: string,
+  sourcePath: string,
+  writtenFiles: readonly string[] = [],
+): Promise<void> {
+  const sourceSummaries = writtenFiles.filter((filePath) => isSourceSummaryWikiPath(filePath))
+  if (sourceSummaries.length > 0) {
+    await cleanupWrittenFiles(projectPath, sourceSummaries)
+  }
+  try {
+    const { deleteSourceFiles } = await import("@/lib/source-lifecycle")
+    await deleteSourceFiles(projectPath, [sourcePath], {
+      fileAlreadyDeleted: true,
+      logReason: "ingest discarded after source delete",
+    })
+  } catch (err) {
+    console.warn("[Ingest Queue] Failed to undo discarded ingest writes:", err)
+  }
 }
 
 function isStructuralWikiPath(filePath: string): boolean {
@@ -634,7 +663,10 @@ export async function discardTasksForSources(
   const hadProcessingTask = targets.some((task) => task.status === "processing")
   for (const task of targets) {
     restoredPausedTaskIds.delete(task.id)
-    if (task.status === "processing") cancelledInFlightTaskIds.add(task.id)
+    if (task.status === "processing") {
+      cancelledInFlightTaskIds.add(task.id)
+      discardedInFlightTaskIds.add(task.id)
+    }
   }
   for (const task of targets) {
     const run = activeRuns.get(task.id)
@@ -802,6 +834,7 @@ export function clearQueueState(): void {
   queue = []
   restoredPausedTaskIds.clear()
   cancelledInFlightTaskIds.clear()
+  discardedInFlightTaskIds.clear()
   activeRuns.clear()
   scheduling = false
   paused = false
@@ -877,6 +910,8 @@ export async function pauseQueue(): Promise<void> {
   queue = []
   restoredPausedTaskIds.clear()
   cancelledInFlightTaskIds.clear()
+  // Keep discardedInFlightTaskIds until the old run observes them so a
+  // late autoIngest completion can still undo writes on the old path.
   currentProjectId = ""
   currentProjectPath = ""
   processedSinceDrain = false
@@ -1054,8 +1089,13 @@ async function runTask(
       trackWrittenFile,
       { runCommit },
     )
-    if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
     run.writtenFiles = writtenFiles
+    if (discardedInFlightTaskIds.delete(task.id)) {
+      cancelledInFlightTaskIds.delete(task.id)
+      await undoDiscardedSourceIngest(projectPath, fullSourcePath, writtenFiles)
+      return
+    }
+    if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
 
     const currentTask = queue.find((candidate) => candidate.id === task.id)
     if (cancelledInFlightTaskIds.delete(task.id) || currentTask?.status === "cancelled") {
@@ -1074,6 +1114,11 @@ async function runTask(
     await saveQueue(projectPath)
     console.log(`[Ingest Queue] Done: ${task.sourcePath}`)
   } catch (err) {
+    if (discardedInFlightTaskIds.delete(task.id)) {
+      cancelledInFlightTaskIds.delete(task.id)
+      await undoDiscardedSourceIngest(projectPath, fullSourcePath, run.writtenFiles)
+      return
+    }
     if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
     const currentTask = queue.find((candidate) => candidate.id === task.id)
     if (cancelledInFlightTaskIds.delete(task.id) || currentTask?.status === "cancelled") {
