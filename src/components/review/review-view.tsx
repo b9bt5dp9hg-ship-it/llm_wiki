@@ -41,7 +41,6 @@ export function ReviewView() {
   const resolveItem = useReviewStore((s) => s.resolveItem)
   const dismissItem = useReviewStore((s) => s.dismissItem)
   const clearResolved = useReviewStore((s) => s.clearResolved)
-  const setItems = useReviewStore((s) => s.setItems)
   const project = useWikiStore((s) => s.project)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set())
@@ -54,16 +53,15 @@ export function ReviewView() {
     if (!project || refreshing) return
     setRefreshing(true)
     try {
-      const { loadReviewItems } = await import("@/lib/persist")
-      const loaded = await loadReviewItems(project.path)
-      setItems(loaded)
+      const { hydrateReviewItems } = await import("@/lib/hydrate-project-side-stores")
+      await hydrateReviewItems(project)
       setSelectedReviewIds(new Set())
     } catch (err) {
       console.error("Failed to refresh review items:", err)
     } finally {
       setRefreshing(false)
     }
-  }, [project, refreshing, setItems])
+  }, [project, refreshing])
 
   const handleResolve = useCallback(async (id: string, action: string) => {
     const pp = project ? normalizePath(project.path) : ""

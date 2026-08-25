@@ -22,6 +22,8 @@ export interface ReviewItem {
 
 interface ReviewState {
   items: ReviewItem[]
+  /** Increments on every store mutation so delayed disk loads can detect races. */
+  generation: number
   addItem: (item: Omit<ReviewItem, "id" | "resolved" | "createdAt">) => void
   addItems: (items: Omit<ReviewItem, "id" | "resolved" | "createdAt">[]) => void
   setItems: (items: ReviewItem[]) => void
@@ -104,18 +106,21 @@ export function normalizeReviewItems(items: ReviewItem[]): ReviewItem[] {
 
 export const useReviewStore = create<ReviewState>((set) => ({
   items: [],
+  generation: 0,
 
   addItem: (item) =>
     set((state) => {
       const id = reviewIdFor(item)
+      const generation = state.generation + 1
       // Same-content item already present (possibly resolved) → keep it
       // as-is so resolved state survives. The stable id makes this a
       // simple identity check, no separate dedup key.
       if (state.items.some((it) => it.id === id)) {
-        return { items: state.items }
+        return { items: state.items, generation }
       }
       return {
         items: [...state.items, { ...item, id, resolved: false, createdAt: Date.now() }],
+        generation,
       }
     }),
 
@@ -150,7 +155,7 @@ export const useReviewStore = create<ReviewState>((set) => ({
         }
       }
 
-      return { items: result }
+      return { items: result, generation: state.generation + 1 }
     }),
 
   setItems: (items) => {
@@ -160,7 +165,10 @@ export const useReviewStore = create<ReviewState>((set) => ({
     // resolved review keeps its resolution across the id-scheme change.
     // Computing the id from content (not the old id) makes this
     // idempotent — no migration-version flag needed.
-    set({ items: normalizeReviewItems(items) })
+    set((state) => ({
+      items: normalizeReviewItems(items),
+      generation: state.generation + 1,
+    }))
   },
 
   resolveItem: (id, action) =>
@@ -168,15 +176,18 @@ export const useReviewStore = create<ReviewState>((set) => ({
       items: state.items.map((item) =>
         item.id === id ? { ...item, resolved: true, resolvedAction: action } : item
       ),
+      generation: state.generation + 1,
     })),
 
   dismissItem: (id) =>
     set((state) => ({
       items: state.items.filter((item) => item.id !== id),
+      generation: state.generation + 1,
     })),
 
   clearResolved: () =>
     set((state) => ({
       items: state.items.filter((item) => !item.resolved),
+      generation: state.generation + 1,
     })),
 }))

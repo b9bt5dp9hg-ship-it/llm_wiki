@@ -40,10 +40,12 @@ export async function resetProjectState(): Promise<void> {
 
   useReviewStore.setState({
     items: [],
+    generation: 0,
   })
 
   useLintStore.setState({
     items: [],
+    generation: 0,
   })
 
   useActivityStore.setState({

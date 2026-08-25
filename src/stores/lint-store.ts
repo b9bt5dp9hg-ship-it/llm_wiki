@@ -81,6 +81,8 @@ function syncCounterFromItems(items: readonly LintItem[]): void {
 
 interface LintState {
   items: LintItem[]
+  /** Increments on every store mutation so delayed disk loads can detect races. */
+  generation: number
   setItems: (items: LintItem[]) => void
   addItems: (results: LintResult[]) => void
   removeItem: (id: string) => void
@@ -92,20 +94,23 @@ let counter = 0
 
 export const useLintStore = create<LintState>((set) => ({
   items: [],
+  generation: 0,
 
   setItems: (items) => {
     syncCounterFromItems(items)
-    set({ items })
+    set((state) => ({ items, generation: state.generation + 1 }))
   },
 
   addItems: (results) =>
     set((state) => ({
       items: [...state.items, ...results.map(lintResultToItem)],
+      generation: state.generation + 1,
     })),
 
   removeItem: (id) =>
     set((state) => ({
       items: state.items.filter((item) => item.id !== id),
+      generation: state.generation + 1,
     })),
 
   removeItems: (ids) =>
@@ -113,8 +118,9 @@ export const useLintStore = create<LintState>((set) => ({
       const remove = new Set(ids)
       return {
         items: state.items.filter((item) => !remove.has(item.id)),
+        generation: state.generation + 1,
       }
     }),
 
-  clearItems: () => set({ items: [] }),
+  clearItems: () => set((state) => ({ items: [], generation: state.generation + 1 })),
 }))
