@@ -584,12 +584,11 @@ export function buildGraphOffline(
       const target = byStem.get(pageStem(match[1].trim()))
       if (!target || target === page.rel) continue
       const key = page.rel < target ? `${page.rel}\0${target}` : `${target}\0${page.rel}`
+      if (seenEdges.has(key)) continue
+      seenEdges.add(key)
       linkCounts.set(page.rel, (linkCounts.get(page.rel) ?? 0) + 1)
       linkCounts.set(target, (linkCounts.get(target) ?? 0) + 1)
-      if (!seenEdges.has(key)) {
-        seenEdges.add(key)
-        edges.push({ source: page.rel, target, weight: 1 })
-      }
+      edges.push({ source: page.rel, target, weight: 1 })
     }
   }
 

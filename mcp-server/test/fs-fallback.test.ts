@@ -396,6 +396,31 @@ test("buildGraphOffline parses frontmatter types and wikilinks", () => {
   assert.ok((alpha.linkCount ?? 0) > 0)
 })
 
+test("buildGraphOffline counts a repeated wikilink as one unique edge, matching the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-dedup-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[beta]] and again [[beta|Beta alias]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nNo outgoing links.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
+    const beta = graph.nodes.find((node) => node.id === "wiki/beta.md")
+    assert.ok(alpha && beta)
+    assert.equal(graph.edges.length, 1)
+    assert.equal(alpha.linkCount, 1)
+    assert.equal(beta.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("searchOffline scores title matches above body matches", () => {
   const result = searchOffline(projectDir, "Beta")
   assert.equal(result.mode, "offline-keyword")
