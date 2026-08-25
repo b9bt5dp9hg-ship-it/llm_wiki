@@ -16,6 +16,7 @@
 import { load } from "@tauri-apps/plugin-store"
 import { readFile, writeFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { withProjectLock } from "@/lib/project-mutex"
 
 const STORE_NAME = "app-state.json"
 const REGISTRY_KEY = "projectRegistry"
@@ -58,15 +59,18 @@ async function readExistingProjectId(projectPath: string): Promise<string | null
 }
 
 export async function ensureProjectId(projectPath: string): Promise<string> {
-  const existing = await readExistingProjectId(projectPath)
-  if (existing) return existing
-  const identity = newProjectIdentity()
-  try {
-    await writeFile(identityPath(projectPath), JSON.stringify(identity, null, 2))
-  } catch (err) {
-    console.warn("[project-identity] failed to write identity file:", err)
-  }
-  return identity.id
+  const pp = normalizePath(projectPath)
+  return withProjectLock(`${pp}\0project-identity`, async () => {
+    const existing = await readExistingProjectId(pp)
+    if (existing) return existing
+    const identity = newProjectIdentity()
+    try {
+      await writeFile(identityPath(pp), JSON.stringify(identity, null, 2))
+    } catch (err) {
+      console.warn("[project-identity] failed to write identity file:", err)
+    }
+    return identity.id
+  })
 }
 
 function newProjectIdentity(): ProjectIdentity {
