@@ -3,7 +3,11 @@ import { createTempProject, readFileRaw, realFs, writeFileRaw } from "@/test-hel
 
 vi.mock("@/commands/fs", () => realFs)
 
-import { ensureProjectId, reissueImportedProjectIdentity } from "./project-identity"
+import {
+  adoptImportedProjectIdentity,
+  ensureProjectId,
+  reissueImportedProjectIdentity,
+} from "./project-identity"
 
 const ORIGINAL_ID = "11111111-1111-4111-8111-111111111111"
 const UUID_RE =
@@ -155,5 +159,100 @@ describe("reissueImportedProjectIdentity", () => {
       await readFileRaw(`${tmp.path}/.llm-wiki/file-change-queue.json`),
     ].join("\n")
     expect(leftover).not.toContain(ORIGINAL_ID)
+  })
+})
+
+const BACKEND_ID = "22222222-2222-4222-8222-222222222222"
+
+describe("adoptImportedProjectIdentity", () => {
+  it("keeps a backend-minted identity instead of issuing a second UUID", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/project.json`,
+      JSON.stringify({ id: BACKEND_ID, createdAt: 999 }, null, 2),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/ingest-queue.json`,
+      JSON.stringify(
+        [
+          {
+            id: "ingest-1",
+            projectId: ORIGINAL_ID,
+            sourcePath: "raw/sources/paper.pdf",
+            folderContext: "papers",
+            status: "pending",
+            addedAt: 1,
+            error: null,
+            retryCount: 0,
+          },
+        ],
+        null,
+        2,
+      ),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/dedup-queue.json`,
+      JSON.stringify(
+        [{ id: "dedup-1", projectId: ORIGINAL_ID, canonicalSlug: "a", status: "pending" }],
+        null,
+        2,
+      ),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/file-change-queue.json`,
+      JSON.stringify(
+        {
+          version: 1,
+          tasks: [{ id: "change-1", projectId: ORIGINAL_ID, path: "raw/sources/paper.pdf" }],
+        },
+        null,
+        2,
+      ),
+    )
+
+    const adopted = await adoptImportedProjectIdentity(tmp.path)
+    expect(adopted).toBe(BACKEND_ID)
+
+    const onDisk = JSON.parse(await readFileRaw(`${tmp.path}/.llm-wiki/project.json`)) as {
+      id: string
+      createdAt: number
+    }
+    expect(onDisk.id).toBe(BACKEND_ID)
+    expect(onDisk.createdAt).toBe(999)
+    expect(await ensureProjectId(tmp.path)).toBe(BACKEND_ID)
+
+    const ingest = JSON.parse(await readFileRaw(`${tmp.path}/.llm-wiki/ingest-queue.json`)) as Array<{
+      projectId: string
+    }>
+    expect(ingest[0]?.projectId).toBe(BACKEND_ID)
+    const dedup = JSON.parse(await readFileRaw(`${tmp.path}/.llm-wiki/dedup-queue.json`)) as Array<{
+      projectId: string
+    }>
+    expect(dedup[0]?.projectId).toBe(BACKEND_ID)
+    const fileChange = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/file-change-queue.json`),
+    ) as { tasks: Array<{ projectId: string }> }
+    expect(fileChange.tasks[0]?.projectId).toBe(BACKEND_ID)
+
+    const leftover = [
+      await readFileRaw(`${tmp.path}/.llm-wiki/ingest-queue.json`),
+      await readFileRaw(`${tmp.path}/.llm-wiki/dedup-queue.json`),
+      await readFileRaw(`${tmp.path}/.llm-wiki/file-change-queue.json`),
+    ].join("\n")
+    expect(leftover).not.toContain(ORIGINAL_ID)
+  })
+
+  it("mints once when the imported copy has no identity file yet", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/ingest-queue.json`,
+      JSON.stringify([{ id: "ingest-1", projectId: ORIGINAL_ID, sourcePath: "raw/sources/a.pdf" }], null, 2),
+    )
+
+    const adopted = await adoptImportedProjectIdentity(tmp.path)
+    expect(adopted).toMatch(UUID_RE)
+    expect(adopted).not.toBe(ORIGINAL_ID)
+    expect(JSON.parse(await readFileRaw(`${tmp.path}/.llm-wiki/project.json`)).id).toBe(adopted)
+    expect(JSON.parse(await readFileRaw(`${tmp.path}/.llm-wiki/ingest-queue.json`))[0].projectId).toBe(
+      adopted,
+    )
   })
 })

@@ -44,20 +44,25 @@ function identityPath(projectPath: string): string {
  * Return the project's stable UUID. Generates + writes one on first call
  * for a project that doesn't have `.llm-wiki/project.json` yet.
  */
-export async function ensureProjectId(projectPath: string): Promise<string> {
-  const path = identityPath(projectPath)
+async function readExistingProjectId(projectPath: string): Promise<string | null> {
   try {
-    const raw = await readFile(path)
+    const raw = await readFile(identityPath(projectPath))
     const parsed = JSON.parse(raw) as ProjectIdentity
     if (parsed?.id && typeof parsed.id === "string") {
       return parsed.id
     }
   } catch {
-    // missing or corrupt — fall through to create
+    // missing or corrupt
   }
+  return null
+}
+
+export async function ensureProjectId(projectPath: string): Promise<string> {
+  const existing = await readExistingProjectId(projectPath)
+  if (existing) return existing
   const identity = newProjectIdentity()
   try {
-    await writeFile(path, JSON.stringify(identity, null, 2))
+    await writeFile(identityPath(projectPath), JSON.stringify(identity, null, 2))
   } catch (err) {
     console.warn("[project-identity] failed to write identity file:", err)
   }
@@ -82,6 +87,21 @@ export async function reissueImportedProjectIdentity(projectPath: string): Promi
   await writeFile(identityPath(pp), JSON.stringify(identity, null, 2))
   await remapImportedProjectBoundQueues(pp, identity.id)
   return identity.id
+}
+
+/**
+ * After backend archive import, the destination already has a freshly minted
+ * identity. Remap cloned queue files onto that id without issuing a second UUID.
+ * Mint once only when the identity file is missing or unreadable.
+ */
+export async function adoptImportedProjectIdentity(projectPath: string): Promise<string> {
+  const pp = normalizePath(projectPath)
+  const existing = await readExistingProjectId(pp)
+  if (!existing) {
+    return reissueImportedProjectIdentity(pp)
+  }
+  await remapImportedProjectBoundQueues(pp, existing)
+  return existing
 }
 
 const IMPORTED_TASK_ARRAY_QUEUES = ["ingest-queue.json", "dedup-queue.json"] as const
