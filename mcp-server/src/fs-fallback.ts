@@ -669,9 +669,10 @@ export function buildGraphOffline(
     const needle = options.q.toLowerCase()
     nodes = nodes.filter((node) => node.label.toLowerCase().includes(needle) || node.id.toLowerCase().includes(needle))
   }
-  if (options.limit && nodes.length > options.limit) {
-    nodes = [...nodes].sort((a, b) => (b.linkCount ?? 0) - (a.linkCount ?? 0)).slice(0, options.limit)
-  }
+  // Live API walks a BTreeMap of stems then truncates; default limit 200, clamp 1..=1000.
+  const limit = Math.min(1000, Math.max(1, options.limit ?? 200))
+  nodes = [...nodes].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  if (nodes.length > limit) nodes = nodes.slice(0, limit)
   const nodeIds = new Set(nodes.map((node) => node.id))
   return { nodes, edges: edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)) }
 }

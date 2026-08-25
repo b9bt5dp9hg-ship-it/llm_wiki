@@ -464,6 +464,43 @@ test("buildGraphOffline counts a repeated wikilink as one unique edge, matching 
   }
 })
 
+test("buildGraphOffline truncates by id order with live-API limit default and clamp", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-limit-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "mu.md"),
+      "---\ntitle: Mu\ntype: entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "zeta.md"),
+      "---\ntitle: Zeta\ntype: entity\n---\n\nSee [[alpha]] and [[mu]].\n",
+    )
+
+    const limited = buildGraphOffline(root, { limit: 2 })
+    assert.deepEqual(limited.nodes.map((node) => node.id), ["alpha", "mu"])
+    assert.equal(limited.edges.length, 0)
+
+    for (let i = 0; i < 201; i++) {
+      const id = `p${String(i).padStart(3, "0")}`
+      fs.writeFileSync(
+        path.join(root, "wiki", `${id}.md`),
+        `---\ntitle: ${id}\ntype: concept\n---\n\nIsolated.\n`,
+      )
+    }
+    const uncapped = buildGraphOffline(root)
+    assert.equal(uncapped.nodes.length, 200)
+    const clamped = buildGraphOffline(root, { limit: 0 })
+    assert.equal(clamped.nodes.length, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline lowercases types and matches nodeType case-insensitively like the live API", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-type-"))
   try {
