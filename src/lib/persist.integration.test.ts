@@ -26,6 +26,7 @@ import {
   loadChatPreferences,
   isSafeConversationId,
   conversationChatFilePath,
+  deletePersistedConversation,
 } from "./persist"
 
 let tmp: { path: string; cleanup: () => Promise<void> }
@@ -407,6 +408,44 @@ describe("chat persistence — round-trip (new format)", () => {
     const loaded = await loadChatHistory(tmp.path)
     expect(loaded.conversations).toHaveLength(2)
     expect(loaded.messages).toHaveLength(1)
+  })
+
+  it("does not resurrect a dropped conversation from leftover chat files after save", async () => {
+    const convs = [makeConv("c1", "Keep"), makeConv("c2", "Drop")]
+    const msgs = [
+      makeMsg("m1", "c1", "keep me"),
+      makeMsg("m2", "c2", "delete me"),
+    ]
+    await saveChatHistory(tmp.path, convs, msgs)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c2.json`)).toBe(true)
+
+    await saveChatHistory(tmp.path, [convs[0]], [msgs[0]])
+
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(true)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c2.json`)).toBe(false)
+
+    // If the index is later emptied, orphan recovery may rebuild kept
+    // conversations from remaining files — but not the dropped one.
+    await writeFileRaw(`${tmp.path}/.llm-wiki/conversations.json`, "[]")
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(JSON.stringify(loaded)).not.toContain("delete me")
+  })
+
+  it("prunes all chat files when the conversation list is empty", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "gone")])
+    await saveChatHistory(tmp.path, [], [])
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([])
+    expect(loaded.messages).toEqual([])
+  })
+
+  it("deletePersistedConversation removes the chat file and ignores a missing file", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "bye")])
+    await deletePersistedConversation(tmp.path, "c1")
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    await expect(deletePersistedConversation(tmp.path, "c1")).resolves.toBeUndefined()
   })
 
   it("recovers conversations from orphan chat files when conversation index was overwritten empty", async () => {

@@ -12,8 +12,8 @@ import { resolveTaskLlmConfig } from "@/lib/llm-task-routing"
 import { isReasoningOnlyResponseError, streamChat } from "@/lib/llm-client"
 import { supportsImageInput } from "@/lib/llm-providers"
 import { executeIngestWrites } from "@/lib/ingest"
-import { deleteFile, openPathInProject, readFile } from "@/commands/fs"
-import { conversationChatFilePath } from "@/lib/persist"
+import { openPathInProject, readFile } from "@/commands/fs"
+import { discardConversation } from "@/lib/persist"
 import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
 import { hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import type { ChatAgentEvent, ChatAgentFileChange, ChatAgentStep, ChatUserInputRequest } from "@/lib/chat-agent-types"
@@ -243,13 +243,13 @@ function ConversationSidebar({
                       className="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
                       onClick={(e) => {
                         e.stopPropagation()
-                        deleteConversation(conv.id)
-                        // Delete persisted chat file
-                        const proj = useWikiStore.getState().project
-                        const chatPath = proj ? conversationChatFilePath(proj.path, conv.id) : null
-                        if (chatPath) {
-                          deleteFile(chatPath).catch(() => {})
-                        }
+                        void discardConversation(
+                          useWikiStore.getState().project?.path,
+                          conv.id,
+                          deleteConversation,
+                        ).catch((err) => {
+                          console.error("Failed to delete conversation:", err)
+                        })
                       }}
                     >
                       <Trash2 className="h-3 w-3" />

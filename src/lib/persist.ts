@@ -1,4 +1,4 @@
-import { writeFile, readFile, createDirectory, listDirectory } from "@/commands/fs"
+import { writeFile, readFile, createDirectory, listDirectory, deleteFile, fileExists } from "@/commands/fs"
 import { normalizeReviewItems, type ReviewItem } from "@/stores/review-store"
 import { normalizeLintItems, type LintItem } from "@/stores/lint-store"
 import type { DisplayMessage, Conversation } from "@/stores/chat-store"
@@ -115,17 +115,13 @@ export async function saveChatHistory(
   const safeConversations = conversations.filter((conversation) =>
     isSafeConversationId(conversation.id),
   )
-
-  // Save conversation list
-  await writeFile(
-    `${pp}/.llm-wiki/conversations.json`,
-    JSON.stringify(safeConversations, null, 2)
-  )
+  const keptIds = new Set(safeConversations.map((conversation) => conversation.id))
 
   // Save each conversation's messages separately
   const byConversation = new Map<string, DisplayMessage[]>()
   for (const msg of messages) {
     if (!isSafeConversationId(msg.conversationId)) continue
+    if (!keptIds.has(msg.conversationId)) continue
     const list = byConversation.get(msg.conversationId) ?? []
     // Images can be multi-megabyte base64 payloads. Keep them in memory for the
     // current chat turn, but don't persist them into chat JSON where they would
@@ -140,6 +136,64 @@ export async function saveChatHistory(
     // Keep last 100 messages per conversation
     const toSave = msgs.slice(-100)
     await writeFile(chatPath, JSON.stringify(toSave, null, 2))
+  }
+
+  // Drop files for conversations no longer in the index *before* rewriting
+  // conversations.json. Otherwise an in-memory delete plus a failed file
+  // unlink leaves an orphan that loadChatHistory will resurrect.
+  await pruneRemovedChatFiles(pp, keptIds)
+
+  await writeFile(
+    `${pp}/.llm-wiki/conversations.json`,
+    JSON.stringify(safeConversations, null, 2)
+  )
+}
+
+/**
+ * Delete the on-disk chat file for a conversation. Missing files are
+ * already gone. Callers must not drop the in-memory conversation until
+ * this resolves — a swallowed failure plus auto-save would empty the
+ * index while orphan recovery brings the chat back.
+ */
+export async function deletePersistedConversation(
+  projectPath: string,
+  conversationId: string,
+): Promise<void> {
+  const chatPath = conversationChatFilePath(projectPath, conversationId)
+  if (!chatPath) return
+  if (!(await fileExists(chatPath))) return
+  await deleteFile(chatPath)
+}
+
+/** Remove a conversation from disk first, then from memory. */
+export async function discardConversation(
+  projectPath: string | undefined | null,
+  conversationId: string,
+  removeFromStore: (id: string) => void,
+): Promise<void> {
+  if (projectPath) {
+    await deletePersistedConversation(projectPath, conversationId)
+  }
+  removeFromStore(conversationId)
+}
+
+async function pruneRemovedChatFiles(
+  projectPath: string,
+  keptIds: Set<string>,
+): Promise<void> {
+  let files: FileNode[]
+  try {
+    files = flattenFiles(await listDirectory(`${projectPath}/.llm-wiki/chats`))
+  } catch {
+    return
+  }
+
+  for (const file of files) {
+    if (file.is_dir || !file.name.toLowerCase().endsWith(".json")) continue
+    const id = file.name.replace(/\.json$/i, "")
+    const chatPath = conversationChatFilePath(projectPath, id)
+    if (!chatPath || keptIds.has(id)) continue
+    await deleteFile(chatPath)
   }
 }
 
