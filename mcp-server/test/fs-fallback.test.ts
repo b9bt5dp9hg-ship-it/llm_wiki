@@ -460,3 +460,87 @@ test("readProjectsFromAppState prefers the registry key over a stale nested entr
     fs.rmSync(personal, { recursive: true, force: true })
   }
 })
+
+test("offline current follows LLM_WIKI_PROJECT_PATH instead of lastProject", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const beta = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-beta-"))
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+        "bbbb-bbbb": { id: "bbbb-bbbb", name: "Beta", path: beta, lastOpened: 2 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = beta
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "bbbb-bbbb")
+      assert.equal(current?.path, beta)
+      assert.equal(current?.current, true)
+
+      const projects = readProjectsFromAppState()
+      const byId = Object.fromEntries(projects.map((project) => [project.id, project]))
+      assert.equal(byId["bbbb-bbbb"]?.current, true)
+      assert.equal(byId["aaaa-aaaa"]?.current, false)
+      const listedCurrent = projects.find((project) => project.current)
+      assert.equal(listedCurrent?.id, current?.id)
+      assert.equal(listedCurrent?.path, current?.path)
+      assert.equal(projects.filter((project) => project.current).length, 1)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(beta, { recursive: true, force: true })
+  }
+})
+
+test("offline current includes LLM_WIKI_PROJECT_PATH when it is absent from the registry", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-env-only-"))
+  try {
+    fs.mkdirSync(path.join(extra, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(extra, ".llm-wiki", "project.json"), JSON.stringify({ id: "eeee-eeee" }))
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = extra
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "eeee-eeee")
+      assert.equal(current?.current, true)
+      assert.equal(current?.path, extra)
+
+      const projects = readProjectsFromAppState()
+      const listedCurrent = projects.find((project) => project.current)
+      assert.equal(listedCurrent?.id, "eeee-eeee")
+      assert.equal(listedCurrent?.path, extra)
+      assert.equal(projects.find((project) => project.id === "aaaa-aaaa")?.current, false)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(extra, { recursive: true, force: true })
+  }
+})
+
+test("offline current keeps lastProject when LLM_WIKI_PROJECT_PATH is missing", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const missing = path.join(os.tmpdir(), `llm-wiki-missing-${process.pid}-${Date.now()}`)
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = missing
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "aaaa-aaaa")
+      assert.equal(current?.path, alpha)
+      assert.equal(current?.current, true)
+      assert.equal(readProjectsFromAppState().find((project) => project.current)?.id, "aaaa-aaaa")
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+  }
+})

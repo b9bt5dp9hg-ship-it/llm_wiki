@@ -59,8 +59,9 @@ function fromPath(projectPath: string, id?: string, name?: string, current = fal
  * Resolve a project without the app, matching the desktop API contract:
  * UUID, filesystem path, or "current". An explicit unknown id must not
  * fall through to lastProject / LLM_WIKI_PROJECT_PATH — that would search
- * the wrong wiki. Defaults (omitted / "current") still use env, then
- * lastProject, then the first registry entry.
+ * the wrong wiki. Defaults (omitted / "current") use the same current
+ * marker as `readProjectsFromAppState` (env, then lastProject, then the
+ * first registry entry).
  */
 export function findOfflineProject(requested?: string): ApiProject | null {
   const projects = readProjectsFromAppState()
@@ -81,15 +82,8 @@ export function findOfflineProject(requested?: string): ApiProject | null {
     return null
   }
 
-  const env = process.env.LLM_WIKI_PROJECT_PATH
-  if (env && projectDirExists(env)) {
-    const normalized = normalizeProjectPath(env)
-    return projects.find((project) => normalizeProjectPath(project.path) === normalized)
-      ?? fromPath(env)
-  }
-
-  const last = projects.find((project) => project.current) ?? projects[0]
-  if (last && projectDirExists(last.path)) return last
+  const current = projects.find((project) => project.current) ?? projects[0]
+  if (current && projectDirExists(current.path)) return current
   return null
 }
 
@@ -98,44 +92,55 @@ export function resolveOfflineProjectPath(explicit?: string): string | null {
 }
 
 export function readProjectsFromAppState(): ApiProject[] {
+  let lastProject: { id?: string; name?: string; path?: string } | undefined
+  let registry: Record<string, { id?: string; name?: string; path?: string }> | undefined
+  let recents: Array<{ id?: string; name?: string; path?: string }> | undefined
   try {
     const raw = JSON.parse(fs.readFileSync(defaultAppStatePath(), "utf8")) as Record<string, unknown>
-    const lastProject = raw.lastProject as { id?: string; name?: string; path?: string } | undefined
-    const registry = raw.projectRegistry as Record<string, { id?: string; name?: string; path?: string }> | undefined
-    const recents = raw.recentProjects as Array<{ id?: string; name?: string; path?: string }> | undefined
-    const byPath = new Map<string, ApiProject>()
-    const lastPath = lastProject?.path ? normalizeProjectPath(lastProject.path) : ""
-
-    const add = (id: string, name: string | undefined, projectPath: string) => {
-      if (!projectPath) return
-      const normalized = normalizeProjectPath(projectPath)
-      if (!normalized || byPath.has(normalized)) return
-      byPath.set(normalized, fromPath(projectPath, id, name, lastPath === normalized))
-    }
-
-    for (const [key, entry] of Object.entries(registry ?? {})) {
-      if (!entry?.path) continue
-      // Registry map key is canonical, matching the desktop API. A stale
-      // nested entry.id must not remap another project's UUID onto this path.
-      add(key, entry.name, entry.path)
-    }
-    if (Array.isArray(recents)) {
-      for (const entry of recents) {
-        if (!entry?.path) continue
-        add(typeof entry.id === "string" && entry.id ? entry.id : readProjectId(entry.path), entry.name, entry.path)
-      }
-    }
-    if (lastProject?.path) {
-      add(
-        typeof lastProject.id === "string" && lastProject.id ? lastProject.id : readProjectId(lastProject.path),
-        lastProject.name,
-        lastProject.path,
-      )
-    }
-    return [...byPath.values()]
+    lastProject = raw.lastProject as { id?: string; name?: string; path?: string } | undefined
+    registry = raw.projectRegistry as Record<string, { id?: string; name?: string; path?: string }> | undefined
+    recents = raw.recentProjects as Array<{ id?: string; name?: string; path?: string }> | undefined
   } catch {
-    return []
+    // Missing or invalid app-state still allows LLM_WIKI_PROJECT_PATH below.
   }
+
+  const env = process.env.LLM_WIKI_PROJECT_PATH
+  const envPath = env && projectDirExists(env) ? normalizeProjectPath(env) : ""
+  const lastPath = lastProject?.path ? normalizeProjectPath(lastProject.path) : ""
+  // Env is the offline current override; list and resolve must share it.
+  const currentPath = envPath || lastPath
+
+  const byPath = new Map<string, ApiProject>()
+  const add = (id: string, name: string | undefined, projectPath: string) => {
+    if (!projectPath) return
+    const normalized = normalizeProjectPath(projectPath)
+    if (!normalized || byPath.has(normalized)) return
+    byPath.set(normalized, fromPath(projectPath, id, name, currentPath === normalized))
+  }
+
+  for (const [key, entry] of Object.entries(registry ?? {})) {
+    if (!entry?.path) continue
+    // Registry map key is canonical, matching the desktop API. A stale
+    // nested entry.id must not remap another project's UUID onto this path.
+    add(key, entry.name, entry.path)
+  }
+  if (Array.isArray(recents)) {
+    for (const entry of recents) {
+      if (!entry?.path) continue
+      add(typeof entry.id === "string" && entry.id ? entry.id : readProjectId(entry.path), entry.name, entry.path)
+    }
+  }
+  if (lastProject?.path) {
+    add(
+      typeof lastProject.id === "string" && lastProject.id ? lastProject.id : readProjectId(lastProject.path),
+      lastProject.name,
+      lastProject.path,
+    )
+  }
+  if (env && envPath) {
+    add(readProjectId(env), undefined, env)
+  }
+  return [...byPath.values()]
 }
 
 export function readProjectId(projectPath: string): string {
