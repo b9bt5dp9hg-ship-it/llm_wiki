@@ -9,6 +9,7 @@ describe("wiki preview store actions", () => {
       selectedFile: null,
       fileContent: "",
       previewContentPath: null,
+      previewContentNonce: 0,
       externalPreview: null,
       previewReturnView: null,
     })
@@ -149,7 +150,11 @@ describe("wiki preview store actions", () => {
     expect(state.selectedFile).toBe("/project/wiki/page.md")
     expect(state.fileContent).toBe("# Page")
     expect(state.previewContentPath).toBe("/project/wiki/page.md")
+    expect(state.previewContentNonce).toBe(1)
     expect(state.externalPreview).toBeNull()
+
+    useWikiStore.getState().openFileInPreview("/project/wiki/page.md", "# Page")
+    expect(useWikiStore.getState().previewContentNonce).toBe(2)
   })
 
   it("returns to the originating sources view when closing a preview", () => {

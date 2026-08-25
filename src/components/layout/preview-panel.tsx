@@ -5,16 +5,16 @@ import { getFileCategory, isBinary, isExtractedTextPreviewFile } from "@/lib/fil
 import { WikiEditor } from "@/components/editor/wiki-editor"
 import { FilePreview } from "@/components/editor/file-preview"
 import { getFileName } from "@/lib/path-utils"
-import { createPreviewFileSession } from "@/lib/preview-file-session"
+import { createPreviewFileSession, type PreviewFileWriteOutcome } from "@/lib/preview-file-session"
 
 export function PreviewPanel() {
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const fileContent = useWikiStore((s) => s.fileContent)
   const previewContentPath = useWikiStore((s) => s.previewContentPath)
+  const previewContentNonce = useWikiStore((s) => s.previewContentNonce)
   const externalPreview = useWikiStore((s) => s.externalPreview)
   const setFileContent = useWikiStore((s) => s.setFileContent)
   const closePreview = useWikiStore((s) => s.closePreview)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadSessionRef = useRef(createPreviewFileSession())
   // Snapshot of what was most recently loaded from disk. Milkdown re-emits
   // `markdownUpdated` on initial parse (before the user types anything),
@@ -33,6 +33,7 @@ export function PreviewPanel() {
       return
     }
     if (previewContentPath === selectedFile) {
+      session.discardPendingWrites()
       session.invalidate()
       lastLoadedRef.current = fileContent
       return
@@ -63,16 +64,12 @@ export function PreviewPanel() {
         setFileContent(`Error loading file: ${err}`)
       },
     )
-  }, [selectedFile, previewContentPath, externalPreview, setFileContent])
+  }, [selectedFile, previewContentPath, previewContentNonce, externalPreview, setFileContent])
 
-  const writeNow = useCallback((path: string, markdown: string, syncStore = false) => {
-    loadSessionRef.current.write(path, markdown)
-      .then((outcome) => {
-        if (outcome.status !== "applied") return
-        lastLoadedRef.current = outcome.content
-        if (syncStore) setFileContent(outcome.content)
-      })
-      .catch((err) => console.error("Failed to save:", err))
+  const applyWrite = useCallback((outcome: PreviewFileWriteOutcome) => {
+    if (outcome.status !== "applied") return
+    lastLoadedRef.current = outcome.content
+    setFileContent(outcome.content)
   }, [setFileContent])
 
   const handleSave = useCallback(
@@ -82,22 +79,22 @@ export function PreviewPanel() {
       // when the user has actually changed the content relative to the
       // last disk read.
       if (markdown === lastLoadedRef.current) return
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      const session = loadSessionRef.current
       if (options?.immediate) {
         setFileContent(markdown)
-        writeNow(selectedFile, markdown, true)
+        session.write(selectedFile, markdown)
+          .then(applyWrite)
+          .catch((err) => console.error("Failed to save:", err))
         return
       }
-      saveTimerRef.current = setTimeout(() => {
-        writeNow(selectedFile, markdown, true)
-      }, 1000)
+      session.scheduleWrite(selectedFile, markdown, 1000, applyWrite)
     },
-    [selectedFile, setFileContent, writeNow]
+    [selectedFile, setFileContent, applyWrite]
   )
 
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      loadSessionRef.current.discardPendingWrites()
     }
   }, [])
 
@@ -137,14 +134,14 @@ export function PreviewPanel() {
           />
         ) : category === "markdown" ? (
           <WikiEditor
-            key={selectedFile}
+            key={`${selectedFile}:${previewContentNonce}`}
             content={fileContent}
             onSave={handleSave}
             filePath={selectedFile}
           />
         ) : (
           <FilePreview
-            key={selectedFile}
+            key={`${selectedFile}:${previewContentNonce}`}
             filePath={selectedFile}
             textContent={fileContent}
           />

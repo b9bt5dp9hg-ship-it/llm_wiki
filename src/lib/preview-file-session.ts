@@ -39,7 +39,10 @@ function createSerialQueue(): { enqueue: <T>(job: () => Promise<T>) => Promise<T
  * queue. A slower older readFile must not replace the currently selected
  * file's editor body, and a slower older writeFile must not persist after
  * a newer save of the same path. Writes skip paths that no longer exist
- * so a pending auto-save cannot recreate a deleted source.
+ * so a pending auto-save cannot recreate a deleted source. History restore
+ * calls discardPendingWrites so a scheduled or queued V2 save cannot
+ * overwrite the restored V0 snapshot; switching files still persists
+ * in-flight drafts of the previous path.
  */
 export function createPreviewFileSession(
   readFileFn: (path: string) => Promise<string> = readFile,
@@ -48,8 +51,37 @@ export function createPreviewFileSession(
 ) {
   let generation = 0
   let writeGeneration = 0
+  let writeEpoch = 0
   let activePath: string | null = null
+  let scheduledTimer: ReturnType<typeof setTimeout> | null = null
   const writes = createSerialQueue()
+
+  function clearScheduledWrite() {
+    if (scheduledTimer === null) return
+    clearTimeout(scheduledTimer)
+    scheduledTimer = null
+  }
+
+  function write(path: string, content: string): Promise<PreviewFileWriteOutcome> {
+    const token = ++writeGeneration
+    const epoch = writeEpoch
+    return writes.enqueue(async () => {
+      try {
+        if (epoch !== writeEpoch || !(await fileExistsFn(path))) {
+          return { status: "stale", token }
+        }
+        await writeFileFn(path, content)
+      } catch (error) {
+        if (epoch !== writeEpoch || token !== writeGeneration || activePath !== path) {
+          return { status: "stale", token }
+        }
+        throw error
+      }
+      return token === writeGeneration && activePath === path && epoch === writeEpoch
+        ? { status: "applied", path, content, token }
+        : { status: "stale", token }
+    })
+  }
 
   return {
     get generation() {
@@ -63,6 +95,10 @@ export function createPreviewFileSession(
     },
     invalidate() {
       generation += 1
+    },
+    discardPendingWrites() {
+      writeEpoch += 1
+      clearScheduledWrite()
     },
     isCurrent(token: number) {
       return token === generation
@@ -85,24 +121,22 @@ export function createPreviewFileSession(
         throw error
       }
     },
-    write(path: string, content: string): Promise<PreviewFileWriteOutcome> {
-      const token = ++writeGeneration
-      return writes.enqueue(async () => {
-        try {
-          if (!(await fileExistsFn(path))) {
-            return { status: "stale", token }
-          }
-          await writeFileFn(path, content)
-        } catch (error) {
-          if (token !== writeGeneration || activePath !== path) {
-            return { status: "stale", token }
-          }
-          throw error
-        }
-        return token === writeGeneration && activePath === path
-          ? { status: "applied", path, content, token }
-          : { status: "stale", token }
-      })
+    write,
+    scheduleWrite(
+      path: string,
+      content: string,
+      delayMs: number,
+      onSettled?: (outcome: PreviewFileWriteOutcome) => void,
+    ) {
+      clearScheduledWrite()
+      const epoch = writeEpoch
+      scheduledTimer = setTimeout(() => {
+        scheduledTimer = null
+        if (epoch !== writeEpoch) return
+        void write(path, content).then(onSettled, (err) => {
+          console.error("Failed to save:", err)
+        })
+      }, delayMs)
     },
   }
 }

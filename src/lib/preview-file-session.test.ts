@@ -175,4 +175,58 @@ describe("createPreviewFileSession", () => {
     expect(fileExists).toHaveBeenCalledWith("/proj/raw/sources/a.md")
     expect(writeFile).not.toHaveBeenCalled()
   })
+
+  it("does not let a scheduled V2 auto-save overwrite a restored V0 snapshot", async () => {
+    vi.useFakeTimers()
+    try {
+      const writeFile = vi.fn().mockResolvedValue(undefined)
+      const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
+      session.activate("/wiki/a.md")
+      session.scheduleWrite("/wiki/a.md", "V2", 1000)
+      session.discardPendingWrites()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(writeFile).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not persist a queued V2 write after history restore discards it", async () => {
+    const older = createDeferred<void>()
+    const written: string[] = []
+    const writeFile = vi.fn((_path: string, content: string) => {
+      if (content === "in-flight") {
+        return older.promise.then(() => {
+          written.push(content)
+        })
+      }
+      written.push(content)
+      return Promise.resolve()
+    })
+
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
+    session.activate("/wiki/a.md")
+    const writeInFlight = session.write("/wiki/a.md", "in-flight")
+    await flushMicrotasks()
+    const writeV2 = session.write("/wiki/a.md", "V2")
+    session.discardPendingWrites()
+    older.resolve()
+    await expect(writeInFlight).resolves.toMatchObject({ status: "stale" })
+    await expect(writeV2).resolves.toMatchObject({ status: "stale" })
+    expect(written).toEqual(["in-flight"])
+  })
+
+  it("still persists a new save after history restore discarded the previous draft", async () => {
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
+    session.activate("/wiki/a.md")
+    session.scheduleWrite("/wiki/a.md", "V2", 1000)
+    session.discardPendingWrites()
+    await expect(session.write("/wiki/a.md", "V0")).resolves.toMatchObject({
+      status: "applied",
+      content: "V0",
+    })
+    expect(writeFile).toHaveBeenCalledTimes(1)
+    expect(writeFile).toHaveBeenCalledWith("/wiki/a.md", "V0")
+  })
 })
