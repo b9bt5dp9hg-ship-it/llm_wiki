@@ -11,6 +11,7 @@ import {
   readProjectId,
   readProjectsFromAppState,
   readReviewsOffline,
+  refreshOfflineProjectIdentity,
   resolveOfflineProjectPath,
   searchOffline,
 } from "../src/fs-fallback.js"
@@ -521,6 +522,29 @@ test("offline current includes LLM_WIKI_PROJECT_PATH when it is absent from the 
     fs.rmSync(alpha, { recursive: true, force: true })
     fs.rmSync(extra, { recursive: true, force: true })
   }
+})
+
+test("refreshOfflineProjectIdentity adopts a reminted project.json UUID", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-pin-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(root, ".llm-wiki", "project.json"), JSON.stringify({ id: "stale-uuid" }))
+    const pinned = { id: "stale-uuid", name: "Pinned", path: root, current: true }
+    fs.writeFileSync(path.join(root, ".llm-wiki", "project.json"), JSON.stringify({ id: "fresh-uuid" }))
+    const refreshed = refreshOfflineProjectIdentity(pinned)
+    assert.equal(refreshed.id, "fresh-uuid")
+    assert.equal(refreshed.path, root)
+    assert.equal(refreshed.name, "Pinned")
+    assert.equal(pinned.id, "stale-uuid")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("refreshOfflineProjectIdentity rejects a vanished pinned path", () => {
+  const missing = path.join(os.tmpdir(), `llm-wiki-missing-pin-${process.pid}-${Date.now()}`)
+  const pinned = { id: "gone-uuid", name: "Gone", path: missing, current: false }
+  assert.throws(() => refreshOfflineProjectIdentity(pinned), /no longer available/)
 })
 
 test("offline current keeps lastProject when LLM_WIKI_PROJECT_PATH is missing", () => {

@@ -27,6 +27,7 @@ import {
   readFileOffline,
   readProjectsFromAppState,
   readReviewsOffline,
+  refreshOfflineProjectIdentity,
   resolveOfflineProjectPath,
   searchOffline,
 } from "./fs-fallback.js"
@@ -250,7 +251,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!found) {
           throw new McpError(ErrorCode.InvalidParams, `Unknown LLM Wiki project: ${requested}`)
         }
-        const pinned = projectBinding.pin(found.id, [found], found)
+        let identity: ApiProject
+        try {
+          identity = refreshOfflineProjectIdentity(found)
+        } catch (error) {
+          throw new McpError(ErrorCode.InvalidParams, scopedErrorMessage(error))
+        }
+        const pinned = projectBinding.pin(identity.id, [identity], identity)
         return textResult(OFFLINE_PREFIX + JSON.stringify({
           activeProject: pinned,
           pinned: true,
@@ -404,18 +411,30 @@ function offlineScope(args: Record<string, unknown>): { path: string; id: string
   const requested = optionalStringArg(args.project_id)
   const pinned = projectBinding.project
   if (pinned) {
+    let project: ApiProject
+    try {
+      project = refreshOfflineProjectIdentity(pinned)
+    } catch (error) {
+      projectBinding.clear()
+      throw new McpError(ErrorCode.InvalidParams, scopedErrorMessage(error))
+    }
     if (
       requested
       && requested !== "current"
       && requested !== pinned.id
+      && requested !== project.id
       && requested !== pinned.path
+      && requested !== project.path
     ) {
       throw new McpError(
         ErrorCode.InvalidParams,
-        `This session is pinned to ${pinned.name} (${pinned.id}); offline access to ${requested} is blocked.`,
+        `This session is pinned to ${project.name} (${project.id}); offline access to ${requested} is blocked.`,
       )
     }
-    return { path: pinned.path, id: pinned.id, project: pinned }
+    if (project.id !== pinned.id) {
+      projectBinding.pin(project.id, [project], project)
+    }
+    return { path: project.path, id: project.id, project }
   }
   const found = findOfflineProject(requested)
   if (!found) {

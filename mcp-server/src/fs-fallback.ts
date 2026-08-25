@@ -156,6 +156,20 @@ export function readProjectId(projectPath: string): string {
   return projectPath
 }
 
+/**
+ * Re-read the pinned folder's project.json after the desktop app stops.
+ * A remint or folder swap must not keep the session on a stale UUID, and a
+ * vanished path must not keep serving the cached pin.
+ */
+export function refreshOfflineProjectIdentity(project: ApiProject): ApiProject {
+  if (!projectDirExists(project.path)) {
+    throw new Error(`Pinned project path is no longer available: ${project.path}`)
+  }
+  const diskId = readProjectId(project.path)
+  if (!diskId || diskId === project.id) return project
+  return { ...project, id: diskId }
+}
+
 function isAllowedExtension(filePath: string): boolean {
   const ext = path.extname(filePath).replace(/^\./, "").toLowerCase()
   return ALLOWED_EXTENSIONS.has(ext)
