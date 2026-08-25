@@ -260,9 +260,12 @@ export function readReviewsOffline(
   options: { status?: ApiReviewStatus; type?: string; limit?: number } = {},
 ): ApiReviewsResponse {
   const status = options.status ?? "unresolved"
+  // Confine before parse: a review.json or .llm-wiki symlink can otherwise
+  // leak another project's queue into this MCP session.
+  const reviewPath = safeJoinOffline(projectPath, ".llm-wiki/review.json")
   let items: Array<Record<string, unknown>> = []
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(projectPath, ".llm-wiki", "review.json"), "utf8"))
+    const raw = JSON.parse(fs.readFileSync(reviewPath, "utf8"))
     if (Array.isArray(raw)) items = raw as Array<Record<string, unknown>>
   } catch {
     items = []

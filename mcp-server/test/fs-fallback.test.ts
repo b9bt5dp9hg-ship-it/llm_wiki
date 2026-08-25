@@ -148,6 +148,49 @@ test("readReviewsOffline defaults to unresolved and backfills ids", () => {
   assert.equal(all.count, 2)
 })
 
+test("readReviewsOffline refuses a review.json symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const secret = path.join(outside, "review.json")
+    fs.writeFileSync(secret, JSON.stringify([
+      { id: "leaked", type: "missing-page", title: "Outside Review", resolved: false, options: [], createdAt: 1 },
+    ]))
+    fs.symlinkSync(secret, path.join(root, ".llm-wiki", "review.json"))
+    assert.throws(
+      () => readReviewsOffline(root),
+      /escapes the project directory/,
+    )
+    assert.equal(fs.readFileSync(secret, "utf8").includes("Outside Review"), true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline refuses a .llm-wiki directory symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-reviews-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "review.json"),
+      JSON.stringify([
+        { id: "other", type: "duplicate", title: "Other Project Review", resolved: false, options: [], createdAt: 1 },
+      ]),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(root, ".llm-wiki"))
+    assert.throws(
+      () => readReviewsOffline(root),
+      /escapes the project directory/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline parses frontmatter types and wikilinks", () => {
   const graph = buildGraphOffline(projectDir)
   const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
