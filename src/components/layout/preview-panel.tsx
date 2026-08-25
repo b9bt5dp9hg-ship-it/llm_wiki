@@ -1,11 +1,12 @@
 import { useEffect, useCallback, useRef } from "react"
 import { X } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { readFile, writeFile } from "@/commands/fs"
+import { writeFile } from "@/commands/fs"
 import { getFileCategory, isBinary, isExtractedTextPreviewFile } from "@/lib/file-types"
 import { WikiEditor } from "@/components/editor/wiki-editor"
 import { FilePreview } from "@/components/editor/file-preview"
 import { getFileName } from "@/lib/path-utils"
+import { createPreviewFileSession } from "@/lib/preview-file-session"
 
 export function PreviewPanel() {
   const selectedFile = useWikiStore((s) => s.selectedFile)
@@ -15,6 +16,7 @@ export function PreviewPanel() {
   const setFileContent = useWikiStore((s) => s.setFileContent)
   const closePreview = useWikiStore((s) => s.closePreview)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadSessionRef = useRef(createPreviewFileSession())
   // Snapshot of what was most recently loaded from disk. Milkdown re-emits
   // `markdownUpdated` on initial parse (before the user types anything),
   // which used to trigger an auto-save that could write back a placeholder
@@ -23,16 +25,20 @@ export function PreviewPanel() {
   const lastLoadedRef = useRef<string>("")
 
   useEffect(() => {
+    const session = loadSessionRef.current
     if (!selectedFile) {
+      session.invalidate()
       setFileContent("")
       lastLoadedRef.current = ""
       return
     }
     if (previewContentPath === selectedFile) {
+      session.invalidate()
       lastLoadedRef.current = fileContent
       return
     }
     if (externalPreview?.path === selectedFile) {
+      session.invalidate()
       lastLoadedRef.current = fileContent
       return
     }
@@ -40,20 +46,23 @@ export function PreviewPanel() {
     const category = getFileCategory(selectedFile)
 
     if (isBinary(category) && !isExtractedTextPreviewFile(selectedFile)) {
+      session.invalidate()
       setFileContent("")
       lastLoadedRef.current = ""
       return
     }
 
-    readFile(selectedFile)
-      .then((content) => {
-        lastLoadedRef.current = content
-        setFileContent(content)
-      })
-      .catch((err) => {
+    void session.load(selectedFile).then(
+      (outcome) => {
+        if (outcome.status !== "applied") return
+        lastLoadedRef.current = outcome.content
+        setFileContent(outcome.content)
+      },
+      (err: unknown) => {
         lastLoadedRef.current = ""
         setFileContent(`Error loading file: ${err}`)
-      })
+      },
+    )
   }, [selectedFile, previewContentPath, externalPreview, setFileContent])
 
   const writeNow = useCallback((path: string, markdown: string, syncStore = false) => {
