@@ -14,7 +14,7 @@ import { supportsImageInput } from "@/lib/llm-providers"
 import { executeIngestWrites } from "@/lib/ingest"
 import { openPathInProject, readFile } from "@/commands/fs"
 import { discardConversation } from "@/lib/persist"
-import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { confineProjectFilePath, getFileName, normalizePath } from "@/lib/path-utils"
 import { hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import type { ChatAgentEvent, ChatAgentFileChange, ChatAgentStep, ChatUserInputRequest } from "@/lib/chat-agent-types"
 import type { ChatMessage as LlmChatMessage, ContentBlock } from "@/lib/llm-client"
@@ -293,12 +293,10 @@ function backendReferenceToMessageReference(ref: BackendAgentReference): Message
   }
 }
 
-function projectAbsolutePath(projectPath: string, path: string): string {
-  const pp = normalizePath(projectPath)
-  const normalized = normalizePath(path)
-  if (normalized.startsWith(`${pp}/`)) return normalized
-  if (isAbsolutePath(normalized)) return normalized
-  return `${pp}/${normalized.replace(/^\/+/, "")}`
+function confinedProjectFiles(projectPath: string, paths: string[]): string[] {
+  return paths
+    .map((path) => confineProjectFilePath(projectPath, path))
+    .filter((path): path is string => path !== null)
 }
 
 function isAgentWorkspacePath(filePath: string): boolean {
@@ -531,7 +529,8 @@ export function ChatPanel() {
   }, [activeConversationId])
   const buildGeneratedOutputPreview = useCallback(async (ref: MessageReference): Promise<ChatReferencePreview | null> => {
     if (!project) return null
-    const outputPath = projectAbsolutePath(project.path, ref.path)
+    const outputPath = confineProjectFilePath(project.path, ref.path)
+    if (!outputPath) return null
     try {
       const category = getFileCategory(outputPath)
       const shouldReadContent = isTextReadable(category) || category === "pdf"
@@ -558,15 +557,16 @@ export function ChatPanel() {
     if (useChatStore.getState().activeConversationId !== conversationId) return
     const outputs = (references ?? []).filter((ref) => ref.kind === "workspace")
     if (outputs.length === 0 || !project) return
-    const previews = outputs.map((ref) => {
-      const outputPath = projectAbsolutePath(project.path, ref.path)
-      return {
+    const previews = outputs.flatMap((ref) => {
+      const outputPath = confineProjectFilePath(project.path, ref.path)
+      if (!outputPath) return []
+      return [{
         title: ref.title || getFileName(outputPath),
         path: outputPath,
         source: ref.source ?? "Workspace",
         content: "",
         snippet: ref.snippet,
-      }
+      }]
     })
     setReferencePreview(null)
     setGeneratedOutputPreviews(previews)
@@ -615,15 +615,16 @@ export function ChatPanel() {
     if (!project || activeStreaming || !latestGeneratedOutputMessage) return
     const outputs = (latestGeneratedOutputMessage.references ?? []).filter((ref) => ref.kind === "workspace")
     if (outputs.length === 0) return
-    const previews = outputs.map((ref) => {
-      const outputPath = projectAbsolutePath(project.path, ref.path)
-      return {
+    const previews = outputs.flatMap((ref) => {
+      const outputPath = confineProjectFilePath(project.path, ref.path)
+      if (!outputPath) return []
+      return [{
         title: ref.title || getFileName(outputPath),
         path: outputPath,
         source: ref.source ?? "Workspace",
         content: "",
         snippet: ref.snippet,
-      }
+      }]
     })
     const currentKey = generatedOutputPreviews.map((preview) => preview.path).join("\n")
     const nextKey = previews.map((preview) => preview.path).join("\n")
@@ -749,7 +750,7 @@ export function ChatPanel() {
 
       if (!sendOptions.suppressUserMessage) {
         const messageContextFiles = project
-          ? sendOptions.contextFiles.map((path) => projectAbsolutePath(project.path, path))
+          ? confinedProjectFiles(project.path, sendOptions.contextFiles)
           : []
         addMessageToConversation(convId, "user", text, images, messageContextFiles)
       }
@@ -850,7 +851,8 @@ export function ChatPanel() {
                 references.push(ref)
               }
               if (ref.kind === "workspace" && project) {
-                const outputPath = projectAbsolutePath(project.path, ref.path)
+                const outputPath = confineProjectFilePath(project.path, ref.path)
+                if (!outputPath) return
                 const preview: ChatReferencePreview = {
                   title: ref.title || getFileName(outputPath),
                   path: outputPath,
@@ -897,7 +899,8 @@ export function ChatPanel() {
               return
             }
             if (agentEvent.type === "fileChanged" && project && agentEvent.path && agentEvent.tool) {
-              const filePath = projectAbsolutePath(project.path, agentEvent.path)
+              const filePath = confineProjectFilePath(project.path, agentEvent.path)
+              if (!filePath) return
               const editSequence = ++fileEditSequence
               const editId = `${backendRunId}:${filePath}:${editSequence}`
               const editTimestamp = Date.now()
@@ -1775,22 +1778,22 @@ function ContextDetailsPanel({
       // re-reading a file that may have changed since the answer was produced.
       if (reference.kind !== "external" && !content) {
         const normalizedProject = normalizePath(projectPath)
-        const directPath = isAbsolutePath(reference.path)
-          ? normalizePath(reference.path)
-          : projectAbsolutePath(normalizedProject, reference.path)
         const stem = getFileName(reference.path.replace(/^wiki\//, "").replace(/\.md$/i, ""))
-        const candidates = reference.kind === "workspace"
-          ? [directPath]
-          : [
-              directPath,
-              `${normalizedProject}/wiki/entities/${stem}.md`,
-              `${normalizedProject}/wiki/concepts/${stem}.md`,
-              `${normalizedProject}/wiki/sources/${stem}.md`,
-              `${normalizedProject}/wiki/queries/${stem}.md`,
-              `${normalizedProject}/wiki/synthesis/${stem}.md`,
-              `${normalizedProject}/wiki/comparisons/${stem}.md`,
-              `${normalizedProject}/wiki/${stem}.md`,
-            ]
+        const candidates = confinedProjectFiles(
+          normalizedProject,
+          reference.kind === "workspace"
+            ? [reference.path]
+            : [
+                reference.path,
+                `wiki/entities/${stem}.md`,
+                `wiki/concepts/${stem}.md`,
+                `wiki/sources/${stem}.md`,
+                `wiki/queries/${stem}.md`,
+                `wiki/synthesis/${stem}.md`,
+                `wiki/comparisons/${stem}.md`,
+                `wiki/${stem}.md`,
+              ],
+        )
         for (const candidate of candidates) {
           try {
             content = await readFile(candidate)

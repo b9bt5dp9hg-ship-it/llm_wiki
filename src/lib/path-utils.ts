@@ -168,6 +168,36 @@ export function confinePreviewFilePath(projectPath: string, targetPath: string):
   return collapsed
 }
 
+/**
+ * Resolve a chat/workspace file so citations, generated outputs, and attached
+ * context files cannot read outside `<project>/`. Relative targets join at the
+ * project root (wiki, raw, agent-workspace, schema). After collapsing `..`,
+ * `.llm-wiki` stays unreachable.
+ */
+export function confineProjectFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : `${project}/${raw.replace(/^\/+/, "")}`
+  const collapsed = collapsePathSegments(absolute)
+  if (!isPathInsideRoot(collapsed, project)) return null
+  if (caseFoldPath(collapsePathSegments(project)) === caseFoldPath(collapsed)) return null
+  const relative = getRelativePath(collapsed, project)
+  if (
+    relative.split("/").some(
+      (part) => !part || part === "." || part === ".." || part.toLowerCase() === ".llm-wiki",
+    )
+  ) {
+    return null
+  }
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === "..") return null
+  return collapsed
+}
+
 /** Confined preview path plus an optional `.md` sibling, matching prior open: lookup. */
 export function previewFilePathCandidates(projectPath: string, targetPath: string): string[] {
   const confined = confinePreviewFilePath(projectPath, targetPath)

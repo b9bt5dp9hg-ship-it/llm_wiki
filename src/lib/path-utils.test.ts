@@ -8,6 +8,7 @@ import {
   isAbsolutePath,
   confineWikiFilePath,
   confinePreviewFilePath,
+  confineProjectFilePath,
   previewFilePathCandidates,
 } from "./path-utils"
 
@@ -304,5 +305,58 @@ describe("previewFilePathCandidates", () => {
       previewFilePathCandidates(PROJECT, `${PROJECT}/wiki/../.llm-wiki/project.json`),
     ).toEqual([])
     expect(previewFilePathCandidates(PROJECT, "../../../etc/passwd")).toEqual([])
+  })
+})
+
+describe("confineProjectFilePath", () => {
+  const PROJECT = "/Users/me/MyWiki"
+
+  it("joins relative wiki and agent-workspace paths under the project", () => {
+    expect(confineProjectFilePath(PROJECT, "wiki/entities/foo.md")).toBe(
+      `${PROJECT}/wiki/entities/foo.md`,
+    )
+    expect(confineProjectFilePath(PROJECT, "agent-workspace/cover.png")).toBe(
+      `${PROJECT}/agent-workspace/cover.png`,
+    )
+    expect(confineProjectFilePath(PROJECT, "purpose.md")).toBe(`${PROJECT}/purpose.md`)
+  })
+
+  it("keeps an already-absolute in-project file", () => {
+    expect(confineProjectFilePath(PROJECT, `${PROJECT}/raw/sources/paper.pdf`)).toBe(
+      `${PROJECT}/raw/sources/paper.pdf`,
+    )
+  })
+
+  it("rejects absolute paths outside the project", () => {
+    expect(confineProjectFilePath(PROJECT, "/etc/passwd")).toBeNull()
+    expect(confineProjectFilePath(PROJECT, "/Users/me/.ssh/id_rsa")).toBeNull()
+  })
+
+  it("rejects a prefix-matching path that climbs out via ..", () => {
+    expect(
+      confineProjectFilePath(PROJECT, `${PROJECT}/wiki/../.llm-wiki/chats/c1.json`),
+    ).toBeNull()
+    expect(
+      confineProjectFilePath(PROJECT, `${PROJECT}/agent-workspace/../../.ssh/id_rsa`),
+    ).toBeNull()
+    expect(confineProjectFilePath(PROJECT, "../.ssh/id_rsa")).toBeNull()
+  })
+
+  it("rejects a sibling directory that only shares the project prefix", () => {
+    expect(confineProjectFilePath(PROJECT, `${PROJECT}Secret/wiki/foo.md`)).toBeNull()
+  })
+
+  it("rejects the project root itself", () => {
+    expect(confineProjectFilePath(PROJECT, PROJECT)).toBeNull()
+    expect(confineProjectFilePath(PROJECT, ".")).toBeNull()
+  })
+
+  it("accepts an in-project Windows path and rejects a drive-letter escape", () => {
+    expect(
+      confineProjectFilePath("C:/Users/me/MyWiki", "C:/Users/me/MyWiki/agent-workspace/a.svg"),
+    ).toBe("C:/Users/me/MyWiki/agent-workspace/a.svg")
+    expect(
+      confineProjectFilePath("C:/Users/me/MyWiki", "C:/Windows/System32/config"),
+    ).toBeNull()
   })
 })

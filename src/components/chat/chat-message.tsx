@@ -20,7 +20,7 @@ import type { DisplayMessage, MessageReference } from "@/stores/chat-store"
 import type { FileNode } from "@/types/wiki"
 
 import { convertLatexToUnicode } from "@/lib/latex-to-unicode"
-import { normalizePath, getFileName, isAbsolutePath } from "@/lib/path-utils"
+import { normalizePath, getFileName, confineProjectFilePath } from "@/lib/path-utils"
 import { makeQueryFileName } from "@/lib/wiki-filename"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getTaskLlmConfig } from "@/lib/llm-task-routing"
@@ -712,12 +712,20 @@ function referenceSnippet(page: CitedPage): string {
   return page.kind === "external" ? page.snippet?.trim() ?? "" : ""
 }
 
-function projectAbsolutePath(projectPath: string, path: string): string {
-  const pp = normalizePath(projectPath)
-  const normalized = normalizePath(path)
-  if (normalized.startsWith(`${pp}/`)) return normalized
-  if (isAbsolutePath(normalized)) return normalized
-  return `${pp}/${normalized.replace(/^\/+/, "")}`
+function wikiCitationCandidates(projectPath: string, pagePath: string): string[] {
+  const id = getFileName(pagePath.replace(/^wiki\//, "").replace(/\.md$/, ""))
+  return [
+    pagePath,
+    `wiki/entities/${id}.md`,
+    `wiki/concepts/${id}.md`,
+    `wiki/sources/${id}.md`,
+    `wiki/queries/${id}.md`,
+    `wiki/synthesis/${id}.md`,
+    `wiki/comparisons/${id}.md`,
+    `wiki/${id}.md`,
+  ]
+    .map((candidate) => confineProjectFilePath(projectPath, candidate))
+    .filter((candidate): candidate is string => candidate !== null)
 }
 
 function isAgentWorkspacePath(filePath: string): boolean {
@@ -806,17 +814,7 @@ function CitedReferencesPanel({
         if (page.kind === "external" || page.kind === "workspace") {
           return [page.path, { count: 0, firstUrl: null }] as const
         }
-        const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
-        const candidates = [
-          `${pp}/${page.path}`,
-          `${pp}/wiki/entities/${id}.md`,
-          `${pp}/wiki/concepts/${id}.md`,
-          `${pp}/wiki/sources/${id}.md`,
-          `${pp}/wiki/queries/${id}.md`,
-          `${pp}/wiki/synthesis/${id}.md`,
-          `${pp}/wiki/comparisons/${id}.md`,
-          `${pp}/wiki/${id}.md`,
-        ]
+        const candidates = wikiCitationCandidates(pp, page.path)
         for (const candidate of candidates) {
           try {
             const text = await readFile(candidate)
@@ -882,8 +880,9 @@ function CitedReferencesPanel({
       // Fallback: open the wiki summary itself with same scroll
       // target — at least the safety-net section will scroll into
       // view there.
+      const fallbackAbsPath = confineProjectFilePath(pp, fallbackPath)
+      if (!fallbackAbsPath) return
       try {
-        const fallbackAbsPath = projectAbsolutePath(pp, fallbackPath)
         const content = await readFile(fallbackAbsPath)
         setPendingScrollImageSrc(firstUrl)
         if (onOpenReferencePreview) {
@@ -906,16 +905,18 @@ function CitedReferencesPanel({
     if (page.kind === "workspace") {
       if (!project) return
       const pp = normalizePath(project.path)
-      const workspacePath = projectAbsolutePath(pp, page.path)
-      const relatedOutputPreviews = generatedOutputs.map((output) => {
-        const outputPath = projectAbsolutePath(pp, output.path)
-        return {
+      const workspacePath = confineProjectFilePath(pp, page.path)
+      if (!workspacePath) return
+      const relatedOutputPreviews = generatedOutputs.flatMap((output) => {
+        const outputPath = confineProjectFilePath(pp, output.path)
+        if (!outputPath) return []
+        return [{
           title: output.title,
           path: outputPath,
           source: output.source ?? "Workspace",
           content: output.path === page.path ? page.snippet ?? "" : "",
           snippet: output.snippet,
-        }
+        }]
       })
       try {
         const category = getFileCategory(workspacePath)
@@ -991,17 +992,7 @@ function CitedReferencesPanel({
     }
     if (!project) return
     const pp = normalizePath(project.path)
-    const id = getFileName(page.path.replace(/^wiki\//, "").replace(/\.md$/, ""))
-    const candidates = [
-      projectAbsolutePath(pp, page.path),
-      `${pp}/wiki/entities/${id}.md`,
-      `${pp}/wiki/concepts/${id}.md`,
-      `${pp}/wiki/sources/${id}.md`,
-      `${pp}/wiki/queries/${id}.md`,
-      `${pp}/wiki/synthesis/${id}.md`,
-      `${pp}/wiki/comparisons/${id}.md`,
-      `${pp}/wiki/${id}.md`,
-    ]
+    const candidates = wikiCitationCandidates(pp, page.path)
     for (const candidate of candidates) {
       try {
         const content = await readFile(candidate)
@@ -1019,7 +1010,8 @@ function CitedReferencesPanel({
         // try next
       }
     }
-    const fallbackPath = projectAbsolutePath(pp, page.path)
+    const fallbackPath = confineProjectFilePath(pp, page.path)
+    if (!fallbackPath) return
     const fallbackContent = `Unable to load: ${page.path}`
     if (onOpenReferencePreview) {
       onOpenReferencePreview({
@@ -1062,9 +1054,15 @@ function CitedReferencesPanel({
               const refType = getRefType(page.path, page)
               const config = REF_TYPE_CONFIG[refType] ?? REF_TYPE_CONFIG.source
               const Icon = config.icon
-              const absoluteOutputPath = project ? projectAbsolutePath(project.path, page.path) : page.path
-              const isImageOutput = isGeneratedOutputImage(absoluteOutputPath)
-              const imageSrc = isImageOutput ? convertFileSrc(absoluteOutputPath) : null
+              const absoluteOutputPath = project
+                ? confineProjectFilePath(project.path, page.path)
+                : null
+              const isImageOutput = Boolean(
+                absoluteOutputPath && isGeneratedOutputImage(absoluteOutputPath),
+              )
+              const imageSrc = isImageOutput && absoluteOutputPath
+                ? convertFileSrc(absoluteOutputPath)
+                : null
               return (
                 <div
                   key={page.path}
