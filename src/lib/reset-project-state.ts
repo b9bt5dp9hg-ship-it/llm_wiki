@@ -59,12 +59,13 @@ export async function resetProjectState(): Promise<void> {
 
   // Module-level caches — load in parallel and clear each, surfacing any
   // failure instead of swallowing it.
-  const [queueMod, dedupQueueMod, graphMod, fileSyncMod, scheduledImportMod] = await Promise.allSettled([
+  const [queueMod, dedupQueueMod, graphMod, fileSyncMod, scheduledImportMod, researchMod] = await Promise.allSettled([
     import("@/lib/ingest-queue"),
     import("@/lib/dedup-queue"),
     import("@/lib/graph-relevance"),
     import("@/lib/project-file-sync"),
     import("@/lib/scheduled-import"),
+    import("@/lib/deep-research"),
   ])
 
   if (scheduledImportMod.status === "fulfilled") {
@@ -119,6 +120,16 @@ export async function resetProjectState(): Promise<void> {
     }
   } else {
     console.warn("[Reset Project State] Failed to load project-file-sync:", fileSyncMod.reason)
+  }
+
+  if (researchMod.status === "fulfilled") {
+    try {
+      researchMod.value.invalidateResearchSession()
+    } catch (err) {
+      console.warn("[Reset Project State] invalidateResearchSession failed:", err)
+    }
+  } else {
+    console.warn("[Reset Project State] Failed to load deep-research:", researchMod.reason)
   }
 
 }

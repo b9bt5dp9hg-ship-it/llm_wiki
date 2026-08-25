@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   citedResearchSourceIndexes,
   collectResearchSources,
+  invalidateResearchSession,
+  isCurrentResearchSession,
   makeDeepResearchFileName,
   noResearchSourcesTaskPatch,
   resolveReviewForSavedResearch,
+  shouldPersistResearchPage,
+  snapshotResearchGeneration,
   validateResearchSynthesis,
 } from "./deep-research"
 import type { SearchApiConfig } from "@/stores/wiki-store"
@@ -363,5 +367,70 @@ describe("collectResearchSources", () => {
     expect(out.results).toHaveLength(20)
     expect(infoSpy).toHaveBeenCalledTimes(1)
     infoSpy.mockRestore()
+  })
+})
+
+describe("deep research session after project switch", () => {
+  const projectA = { id: "p-a", name: "A", path: "/proj-a" }
+  const projectB = { id: "p-b", name: "B", path: "/proj-b" }
+
+  afterEach(() => {
+    invalidateResearchSession()
+    useWikiStore.setState({ project: null })
+    useResearchStore.setState({ tasks: [], panelOpen: false })
+  })
+
+  it("does not resume an in-flight run when the original project path becomes active again", () => {
+    useWikiStore.setState({ project: projectA })
+    const generation = snapshotResearchGeneration()
+    expect(isCurrentResearchSession(projectA.path, generation)).toBe(true)
+
+    invalidateResearchSession()
+    useWikiStore.setState({ project: projectB })
+    expect(isCurrentResearchSession(projectA.path, generation)).toBe(false)
+
+    useWikiStore.setState({ project: projectA })
+    expect(isCurrentResearchSession(projectA.path, generation)).toBe(false)
+  })
+
+  it("does not persist a query page after A→B→A even if the task is still in memory", () => {
+    useWikiStore.setState({ project: projectA })
+    useResearchStore.setState({
+      tasks: [{
+        id: "research-old",
+        topic: "topic",
+        status: "saving",
+        webResults: [],
+        synthesis: "draft",
+        savedPath: null,
+        error: null,
+        createdAt: 1,
+      }],
+    })
+    const generation = snapshotResearchGeneration()
+    expect(shouldPersistResearchPage(projectA.path, generation, "research-old")).toBe(true)
+
+    invalidateResearchSession()
+    useWikiStore.setState({ project: projectB })
+    useWikiStore.setState({ project: projectA })
+
+    expect(shouldPersistResearchPage(projectA.path, generation, "research-old")).toBe(false)
+  })
+
+  it("does not persist a query page whose task was cleared during the project switch", () => {
+    useWikiStore.setState({ project: projectA })
+    const generation = snapshotResearchGeneration()
+    expect(shouldPersistResearchPage(projectA.path, generation, "research-old")).toBe(false)
+  })
+
+  it("invalidates the in-flight session when project state is reset", async () => {
+    const { resetProjectState } = await import("./reset-project-state")
+    useWikiStore.setState({ project: projectA })
+    const generation = snapshotResearchGeneration()
+    expect(isCurrentResearchSession(projectA.path, generation)).toBe(true)
+
+    await resetProjectState()
+
+    expect(isCurrentResearchSession(projectA.path, generation)).toBe(false)
   })
 })
