@@ -15,7 +15,12 @@
  */
 import { invoke } from "@tauri-apps/api/core"
 import { copyFile, createDirectory, fileExists, readFileAsBase64 } from "@/commands/fs"
-import { getFileName, normalizePath } from "@/lib/path-utils"
+import {
+  confineProjectFilePath,
+  getFileName,
+  isAbsolutePath,
+  normalizePath,
+} from "@/lib/path-utils"
 
 /** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
 export interface SavedImage {
@@ -55,6 +60,41 @@ const MARKDOWN_IMAGE_EXTS = new Set([
 function dirname(path: string): string {
   const idx = normalizePath(path).lastIndexOf("/")
   return idx >= 0 ? normalizePath(path).slice(0, idx) : ""
+}
+
+/**
+ * Media folders are `<project>/wiki/media/<slug>/`. A slug with `/` or
+ * `..` would let ingest write extracted images into `.llm-wiki` or
+ * outside the project.
+ */
+function confineWikiMediaDir(projectPath: string, slug: string): string | null {
+  if (typeof slug !== "string") return null
+  const trimmed = slug.trim()
+  if (!trimmed || /[/\\]/.test(trimmed) || /[\x00-\x1f]/.test(trimmed)) return null
+  if (trimmed === "." || trimmed === "..") return null
+  return confineProjectFilePath(projectPath, `wiki/media/${trimmed}`)
+}
+
+/**
+ * Resolve a markdown image ref against the source file, then keep the
+ * copy inside the project. Absolute paths, `..` climbs, and `.llm-wiki`
+ * stay unreadable to ingest.
+ */
+function confineMarkdownImageSourcePath(
+  projectPath: string,
+  sourcePath: string,
+  ref: string,
+): string | null {
+  if (typeof ref !== "string") return null
+  const raw = normalizePath(ref.trim())
+  if (!raw || /[\x00-\x1f]/.test(raw)) return null
+  const sourceDir = dirname(sourcePath)
+  const candidate = isAbsolutePath(raw) ? raw : `${sourceDir}/${raw}`
+  const confined = confineProjectFilePath(projectPath, candidate)
+  if (!confined) return null
+  const ext = getFileName(confined).split(".").pop()?.toLowerCase() ?? ""
+  if (!MARKDOWN_IMAGE_EXTS.has(ext)) return null
+  return confined
 }
 
 function isRemoteOrDataImageRef(raw: string): boolean {
@@ -163,7 +203,8 @@ export async function extractAndSaveSourceImages(
   if (!isPdf && !isOffice) return []
 
   const slug = slugOverride ?? fileName.replace(/\.[^.]+$/, "")
-  const destDir = `${pp}/wiki/media/${slug}`
+  const destDir = confineWikiMediaDir(pp, slug)
+  if (!destDir) return []
   const relTo = `${pp}/wiki`
 
   try {
@@ -208,9 +249,9 @@ export async function extractAndSaveMarkdownImages(
 
   const pp = normalizePath(projectPath)
   const sp = normalizePath(sourcePath)
-  const sourceDir = dirname(sp)
   const slug = slugOverride ?? getFileName(sp).replace(/\.[^.]+$/, "")
-  const destDir = `${pp}/wiki/media/${slug}`
+  const destDir = confineWikiMediaDir(pp, slug)
+  if (!destDir) return []
   const images: SavedImage[] = []
 
   try {
@@ -221,15 +262,13 @@ export async function extractAndSaveMarkdownImages(
   }
 
   for (const ref of refs) {
-    const abs = normalizePath(
-      ref.startsWith("/") || /^[a-zA-Z]:/.test(ref) || ref.startsWith("\\\\")
-        ? ref
-        : `${sourceDir}/${ref}`,
-    )
+    const abs = confineMarkdownImageSourcePath(pp, sp, ref)
+    if (!abs) continue
     try {
       if (!(await fileExists(abs))) continue
       const destName = uniqueDestName(images.length + 1, abs)
-      const dest = `${destDir}/${destName}`
+      const dest = confineProjectFilePath(pp, `${destDir}/${destName}`)
+      if (!dest) continue
       await copyFile(abs, dest)
       const sha256 = await sha256OfFile(dest)
       images.push({
