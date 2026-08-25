@@ -616,36 +616,48 @@ function pageStem(relOrLink: string): string {
   return base.replace(/\.md$/i, "").toLowerCase()
 }
 
+function fileStem(relOrLink: string): string {
+  const base = relOrLink.split("/").pop() ?? relOrLink
+  return base.replace(/\.md$/i, "")
+}
+
 export function buildGraphOffline(
   projectPath: string,
   options: { q?: string; nodeType?: string; limit?: number } = {},
 ): { nodes: ApiGraphNode[]; edges: ApiGraphEdge[] } {
   const pages = collectWikiMarkdown(projectPath)
-  const byStem = new Map<string, string>()
-  for (const page of pages) byStem.set(pageStem(page.rel), page.rel)
+  // Live API keys nodes by file stem (BTreeMap last-write wins on collisions).
+  const raw = new Map<string, { rel: string; content: string }>()
+  for (const page of pages) {
+    const id = fileStem(page.rel)
+    if (!id) continue
+    raw.set(id, { rel: page.rel, content: page.content })
+  }
+  const byLower = new Map<string, string>()
+  for (const id of raw.keys()) byLower.set(id.toLowerCase(), id)
 
   const linkCounts = new Map<string, number>()
   const edges: ApiGraphEdge[] = []
   const seenEdges = new Set<string>()
-  for (const page of pages) {
+  for (const [source, page] of raw) {
     for (const match of page.content.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)) {
-      const target = byStem.get(pageStem(match[1].trim()))
-      if (!target || target === page.rel) continue
-      const key = page.rel < target ? `${page.rel}\0${target}` : `${target}\0${page.rel}`
+      const target = byLower.get(pageStem(match[1].trim()))
+      if (!target || target === source) continue
+      const key = source < target ? `${source}\0${target}` : `${target}\0${source}`
       if (seenEdges.has(key)) continue
       seenEdges.add(key)
-      linkCounts.set(page.rel, (linkCounts.get(page.rel) ?? 0) + 1)
+      linkCounts.set(source, (linkCounts.get(source) ?? 0) + 1)
       linkCounts.set(target, (linkCounts.get(target) ?? 0) + 1)
-      edges.push({ source: page.rel, target, weight: 1 })
+      edges.push({ source, target, weight: 1 })
     }
   }
 
-  let nodes: ApiGraphNode[] = pages.map((page) => ({
-    id: page.rel,
+  let nodes: ApiGraphNode[] = [...raw.entries()].map(([id, page]) => ({
+    id,
     label: frontmatterField(page.content, "title") ?? pageStem(page.rel),
     type: frontmatterField(page.content, "type") ?? "other",
     path: page.rel,
-    linkCount: linkCounts.get(page.rel) ?? 0,
+    linkCount: linkCounts.get(id) ?? 0,
   }))
 
   if (options.nodeType) nodes = nodes.filter((node) => node.type === options.nodeType)

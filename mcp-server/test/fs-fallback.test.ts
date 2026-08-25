@@ -424,16 +424,17 @@ test("readProjectsFromAppState does not bind a recents entry to a foreign UUID v
 
 test("buildGraphOffline parses frontmatter types and wikilinks", () => {
   const graph = buildGraphOffline(projectDir)
-  const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
-  const beta = graph.nodes.find((node) => node.id === "wiki/beta.md")
+  const alpha = graph.nodes.find((node) => node.id === "alpha")
+  const beta = graph.nodes.find((node) => node.id === "beta")
   assert.ok(alpha && beta)
+  assert.equal(alpha.path, "wiki/alpha.md")
   assert.equal(alpha.label, "Alpha Seite")
   assert.equal(alpha.type, "entity")
   assert.equal(beta.type, "concept")
   assert.equal(graph.edges.length, 1)
   assert.deepEqual(
     [graph.edges[0].source, graph.edges[0].target].sort(),
-    ["wiki/alpha.md", "wiki/beta.md"],
+    ["alpha", "beta"],
   )
   assert.ok((alpha.linkCount ?? 0) > 0)
 })
@@ -452,12 +453,48 @@ test("buildGraphOffline counts a repeated wikilink as one unique edge, matching 
     )
 
     const graph = buildGraphOffline(root)
-    const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
-    const beta = graph.nodes.find((node) => node.id === "wiki/beta.md")
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const beta = graph.nodes.find((node) => node.id === "beta")
     assert.ok(alpha && beta)
     assert.equal(graph.edges.length, 1)
     assert.equal(alpha.linkCount, 1)
     assert.equal(beta.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline uses live-API file-stem node ids, not wiki-relative paths", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-ids-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki", "concepts"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[beta]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "concepts", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nBack to [[alpha]].\n",
+    )
+    fs.mkdirSync(path.join(root, "wiki", "dup"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "dup", "alpha.md"),
+      "---\ntitle: Nested Alpha\ntype: entity\n---\n\nDuplicate stem.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const ids = graph.nodes.map((node) => node.id).sort()
+    assert.deepEqual(ids, ["alpha", "beta"])
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const beta = graph.nodes.find((node) => node.id === "beta")
+    assert.ok(alpha && beta)
+    assert.ok(alpha.path === "wiki/alpha.md" || alpha.path === "wiki/dup/alpha.md")
+    assert.equal(beta.path, "wiki/concepts/beta.md")
+    assert.equal(graph.edges.length, 1)
+    assert.deepEqual(
+      [graph.edges[0].source, graph.edges[0].target].sort(),
+      ["alpha", "beta"],
+    )
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
