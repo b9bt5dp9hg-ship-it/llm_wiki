@@ -1,7 +1,6 @@
 import { useEffect, useCallback, useRef } from "react"
 import { X } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { writeFile } from "@/commands/fs"
 import { getFileCategory, isBinary, isExtractedTextPreviewFile } from "@/lib/file-types"
 import { WikiEditor } from "@/components/editor/wiki-editor"
 import { FilePreview } from "@/components/editor/file-preview"
@@ -26,6 +25,7 @@ export function PreviewPanel() {
 
   useEffect(() => {
     const session = loadSessionRef.current
+    session.activate(selectedFile ?? null)
     if (!selectedFile) {
       session.invalidate()
       setFileContent("")
@@ -66,10 +66,11 @@ export function PreviewPanel() {
   }, [selectedFile, previewContentPath, externalPreview, setFileContent])
 
   const writeNow = useCallback((path: string, markdown: string, syncStore = false) => {
-    writeFile(path, markdown)
-      .then(() => {
-        lastLoadedRef.current = markdown
-        if (syncStore) setFileContent(markdown)
+    loadSessionRef.current.write(path, markdown)
+      .then((outcome) => {
+        if (outcome.status !== "applied") return
+        lastLoadedRef.current = outcome.content
+        if (syncStore) setFileContent(outcome.content)
       })
       .catch((err) => console.error("Failed to save:", err))
   }, [setFileContent])
