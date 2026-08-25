@@ -32,6 +32,7 @@ import {
   fetchEmbedding,
   embedPage,
   embedAllPages,
+  getEmbeddingReindexState,
   getLastEmbeddingError,
   legacyVectorRowCount,
   dropLegacyVectorTable,
@@ -1597,6 +1598,57 @@ describe("embedAllPages", () => {
     expect(upsertCalls).toHaveLength(2)
     const pageIds = upsertCalls.map((c) => (c[1] as { pageId: string }).pageId).sort()
     expect(pageIds).toEqual(["attention", "rope"])
+  })
+
+  it("rejects reindex when two wiki pages share the same file stem", async () => {
+    const duplicateTree = [
+      {
+        name: "guides",
+        path: "/proj/wiki/guides",
+        is_dir: true,
+        children: [
+          { name: "notes.md", path: "/proj/wiki/guides/notes.md", is_dir: false },
+        ],
+      },
+      {
+        name: "archive",
+        path: "/proj/wiki/archive",
+        is_dir: true,
+        children: [
+          { name: "notes.md", path: "/proj/wiki/archive/notes.md", is_dir: false },
+        ],
+      },
+    ]
+
+    for (const clearExisting of [true, false]) {
+      mockInvoke.mockClear()
+      mockHttpFetch.mockClear()
+      listDirectoryMock.mockResolvedValueOnce(duplicateTree)
+      readFileMock.mockResolvedValue("# Title\n\nBody.")
+      mockHttpFetch.mockImplementation(async () => okResponse([0.5]))
+
+      let message = ""
+      try {
+        await embedAllPages("/proj", cfg, undefined, { clearExisting })
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err)
+      }
+
+      expect(message).toMatch(/duplicate wiki page stem/i)
+      expect(message).toContain("notes")
+      expect(message).toContain("guides/notes.md")
+      expect(message).toContain("archive/notes.md")
+      expect(getEmbeddingReindexState()).toMatchObject({
+        kind: "error",
+        projectPath: "/proj",
+      })
+
+      const commands = mockInvoke.mock.calls.map((call) => call[0])
+      expect(commands).not.toContain("vector_clear_chunks")
+      expect(commands).not.toContain("vector_upsert_chunks")
+      expect(mockHttpFetch).not.toHaveBeenCalled()
+      expect(readFileMock).not.toHaveBeenCalled()
+    }
   })
 
   it("clears the chunk table before a forced rebuild", async () => {

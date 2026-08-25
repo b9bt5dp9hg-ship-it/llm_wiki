@@ -453,6 +453,46 @@ function throwEmbeddingReindexError(projectPath: string, message: string): never
   throw new Error(message)
 }
 
+function displayProjectRelativePath(projectPath: string, filePath: string): string {
+  const project = normalizePath(projectPath)
+  const file = normalizePath(filePath)
+  const prefix = project.endsWith("/") ? project : `${project}/`
+  return file.startsWith(prefix) ? file.slice(prefix.length) : file
+}
+
+function collectDuplicatePageStems(
+  files: { id: string; path: string }[],
+): Array<{ id: string; paths: string[] }> {
+  const byId = new Map<string, string[]>()
+  for (const file of files) {
+    const paths = byId.get(file.id)
+    if (paths) paths.push(file.path)
+    else byId.set(file.id, [file.path])
+  }
+  return [...byId.entries()]
+    .filter(([, paths]) => paths.length > 1)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, paths]) => ({
+      id,
+      paths: [...paths].sort((left, right) => left.localeCompare(right)),
+    }))
+}
+
+function formatDuplicatePageStemError(
+  projectPath: string,
+  duplicates: Array<{ id: string; paths: string[] }>,
+): string {
+  const details = duplicates
+    .map((dup) => {
+      const shown = dup.paths
+        .map((path) => displayProjectRelativePath(projectPath, path))
+        .join(", ")
+      return `"${dup.id}" (${shown})`
+    })
+    .join("; ")
+  return `Duplicate wiki page stem${duplicates.length > 1 ? "s" : ""} ${details} share one vector page_id. Rename one of the pages before re-index.`
+}
+
 async function parallelForEach<T>(
   items: T[],
   rawLimit: number | undefined,
@@ -540,6 +580,10 @@ export async function embedAllPages(
     }
   }
   walk(tree)
+  const duplicateStems = collectDuplicatePageStems(mdFiles)
+  if (duplicateStems.length > 0) {
+    throwEmbeddingReindexError(pp, formatDuplicatePageStemError(pp, duplicateStems))
+  }
   const scheduleEmbedding = createAsyncLimiter(cfg.concurrency)
   // LanceDB page replacement is intentionally serialized. The configured
   // concurrency applies to outbound embedding HTTP, not database writers.
