@@ -39,7 +39,8 @@
   "welcome": {
     "newProject": "Новый проект",
     "openProject": "Открыть проект",
-    "recentProjects": "Недавние проекты"
+    "recentProjects": "Недавние проекты",
+    "removeRecent": "Удалить {{name}} из недавних проектов"
   },
   "sidebar": {
     "knowledge": "Знания",
@@ -259,6 +260,8 @@
     "writeToWiki": "Записать в вики",
     "emptyHint": "Задайте вопрос или запустите обработку источника, чтобы начать.",
     "sources": "Источники",
+    "conversations": "Разговоры",
+    "deleteConversation": "Удалить разговор {{title}}",
     "newChat": "Новый чат",
     "newConversation": "Новый разговор",
     "noConversationsYet": "Пока нет разговоров",

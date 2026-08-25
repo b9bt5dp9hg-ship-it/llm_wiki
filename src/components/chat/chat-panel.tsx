@@ -26,6 +26,7 @@ import { getFileCategory, getFileExtension, isTextReadable } from "@/lib/file-ty
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { ReferenceKnowledgeGraph } from "@/components/chat/reference-knowledge-graph"
+import { namedIconButtonProps, revealOnHoverOrFocusClass, selectRowProps } from "@/components/list-row-a11y"
 
 type InternalChatSendOptions = ChatSendOptions & {
   suppressUserMessage?: boolean
@@ -179,8 +180,6 @@ function ConversationSidebar({
   const deleteConversation = useChatStore((s) => s.deleteConversation)
   const setActiveConversation = useChatStore((s) => s.setActiveConversation)
 
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-
   const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
 
   function getMessageCount(convId: string): number {
@@ -202,74 +201,72 @@ function ConversationSidebar({
             }
           }}
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           {t("chat.newChat")}
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <nav aria-label={t("chat.conversations")} className="flex-1 overflow-y-auto py-1">
         {sorted.length === 0 ? (
           <p className="px-3 py-4 text-xs text-muted-foreground text-center">
             {t("chat.noConversationsYet")}
           </p>
         ) : (
-          sorted.map((conv) => {
-            const isActive = conv.id === activeConversationId
-            const msgCount = getMessageCount(conv.id)
-            return (
-              <div
-                key={conv.id}
-                className={`group relative mx-1 my-0.5 flex cursor-pointer flex-col rounded-md px-2 py-1.5 text-sm transition-colors ${
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "hover:bg-accent text-foreground"
-                }`}
-                onClick={() => {
-                  if (onSelectConversation) {
-                    onSelectConversation(conv.id)
-                  } else {
-                    setActiveConversation(conv.id)
-                  }
-                }}
-                onMouseEnter={() => setHoveredId(conv.id)}
-                onMouseLeave={() => setHoveredId(null)}
-              >
-                <div className="flex items-start justify-between gap-1">
-                  <span className="line-clamp-2 flex-1 text-xs font-medium leading-snug">
-                    {conv.title}
-                  </span>
-                  {hoveredId === conv.id && (
-                    <button
-                      className="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void discardConversation(
-                          useWikiStore.getState().project?.path,
-                          conv.id,
-                          deleteConversation,
-                        ).catch((err) => {
-                          console.error("Failed to delete conversation:", err)
-                        })
-                      }}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span>{formatDate(conv.updatedAt)}</span>
-                  {msgCount > 0 && (
-                    <>
-                      <span>·</span>
-                      <span>{msgCount} {t("chat.msgCount")}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )
-          })
+          <ul className="m-0 list-none p-0">
+            {sorted.map((conv) => {
+              const isActive = conv.id === activeConversationId
+              const msgCount = getMessageCount(conv.id)
+              return (
+                <li key={conv.id} className="group relative mx-1 my-0.5">
+                  <button
+                    {...selectRowProps(isActive)}
+                    className={`flex w-full flex-col rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "hover:bg-accent text-foreground"
+                    }`}
+                    onClick={() => {
+                      if (onSelectConversation) {
+                        onSelectConversation(conv.id)
+                      } else {
+                        setActiveConversation(conv.id)
+                      }
+                    }}
+                  >
+                    <span className="line-clamp-2 pr-5 text-xs font-medium leading-snug">
+                      {conv.title}
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span>{formatDate(conv.updatedAt)}</span>
+                      {msgCount > 0 && (
+                        <>
+                          <span>·</span>
+                          <span>{msgCount} {t("chat.msgCount")}</span>
+                        </>
+                      )}
+                    </span>
+                  </button>
+                  <button
+                    {...namedIconButtonProps(t("chat.deleteConversation", { title: conv.title }))}
+                    className={`absolute right-1 top-1.5 rounded p-0.5 text-muted-foreground hover:text-destructive ${revealOnHoverOrFocusClass}`}
+                    onClick={() => {
+                      void discardConversation(
+                        useWikiStore.getState().project?.path,
+                        conv.id,
+                        deleteConversation,
+                      ).catch((err) => {
+                        console.error("Failed to delete conversation:", err)
+                      })
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         )}
-      </div>
+      </nav>
     </div>
   )
 }

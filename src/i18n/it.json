@@ -39,7 +39,8 @@
   "welcome": {
     "newProject": "Nuovo progetto",
     "openProject": "Apri progetto",
-    "recentProjects": "Progetti recenti"
+    "recentProjects": "Progetti recenti",
+    "removeRecent": "Rimuovi {{name}} dai progetti recenti"
   },
   "sidebar": {
     "knowledge": "Conoscenza",
@@ -259,6 +260,8 @@
     "writeToWiki": "Scrivi nel wiki",
     "emptyHint": "Fai una domanda o avvia un'elaborazione per iniziare.",
     "sources": "Fonti",
+    "conversations": "Conversazioni",
+    "deleteConversation": "Elimina conversazione {{title}}",
     "newChat": "Nuova chat",
     "newConversation": "Nuova conversazione",
     "noConversationsYet": "Ancora nessuna conversazione",

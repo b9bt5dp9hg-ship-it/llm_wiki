@@ -39,7 +39,8 @@
   "welcome": {
     "newProject": "新建项目",
     "openProject": "打开项目",
-    "recentProjects": "最近项目"
+    "recentProjects": "最近项目",
+    "removeRecent": "从最近项目中移除 {{name}}"
   },
   "sidebar": {
     "knowledge": "知识库",
@@ -259,6 +260,8 @@
     "writeToWiki": "写入 Wiki",
     "emptyHint": "提问或开始提取资料。",
     "sources": "来源",
+    "conversations": "对话列表",
+    "deleteConversation": "删除对话 {{title}}",
     "newChat": "新建对话",
     "newConversation": "新对话",
     "noConversationsYet": "暂无对话",
