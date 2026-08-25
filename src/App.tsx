@@ -591,6 +591,17 @@ function App() {
   }
 
   async function handleSwitchProject() {
+    // Persist outgoing review/lint/chat before tearing anything down. A failed
+    // flush must abort the switch so resetProjectState() cannot discard the
+    // in-memory copy of data that never reached disk.
+    const { flushAndSuspendAutoSave } = await import("@/lib/auto-save")
+    try {
+      await flushAndSuspendAutoSave()
+    } catch (err) {
+      await appDialog.alert({ message: `Failed to save project before switching: ${err}` })
+      return
+    }
+
     // Stop scheduled import before switching projects
     import("@/lib/scheduled-import").then(({ stopScheduledImport }) => {
       stopScheduledImport()
@@ -602,12 +613,6 @@ function App() {
       const currentConfig = useWikiStore.getState().scheduledImportConfig
       saveScheduledImportConfig(currentProject.path, currentConfig).catch(() => {})
     }
-
-    // Flush outgoing project's review/lint/chat to disk and suspend auto-save
-    // before reset empties the stores. resumeAutoSave() runs when the next
-    // project opens via handleProjectOpened.
-    const { flushAndSuspendAutoSave } = await import("@/lib/auto-save")
-    await flushAndSuspendAutoSave()
 
     // Clear all per-project state BEFORE flipping back to the welcome screen
     // so old data cannot leak in via any async render pass.

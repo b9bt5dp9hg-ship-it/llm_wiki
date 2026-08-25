@@ -151,6 +151,37 @@ describe("auto-save project-switch guard", () => {
     expect(saveReviewItems).toHaveBeenCalled()
   })
 
+  it("throws and keeps auto-save armed when a flush persist fails", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("a1")] })
+    saveReviewItems.mockRejectedValueOnce(new Error("disk full"))
+
+    await expect(flushAndSuspendAutoSave()).rejects.toThrow(/disk full/)
+
+    saveReviewItems.mockClear()
+    saveReviewItems.mockResolvedValue(undefined)
+
+    // The outgoing project is still open. A failed flush must not look like
+    // success (so a switcher can wipe memory) and must not leave auto-save
+    // suspended against that live project.
+    useReviewStore.setState({ items: [review("a1"), review("a2")] })
+    vi.runAllTimers()
+
+    expect(saveReviewItems).toHaveBeenCalledWith("/proj/A", [review("a1"), review("a2")])
+  })
+
+  it("does not run the switch action when flush fails", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("a1")] })
+    saveReviewItems.mockRejectedValueOnce(new Error("disk full"))
+    const action = vi.fn(async () => "opened")
+    const onFailure = vi.fn()
+
+    await expect(runWithSuspendedAutoSave(action, onFailure)).rejects.toThrow(/disk full/)
+    expect(action).not.toHaveBeenCalled()
+    expect(onFailure).not.toHaveBeenCalled()
+  })
+
   it("persists chat search preferences on flush", async () => {
     setProjectPath("/proj/A")
     useChatStore.setState({

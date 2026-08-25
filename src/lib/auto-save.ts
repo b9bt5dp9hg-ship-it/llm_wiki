@@ -22,10 +22,16 @@ function clearTimers(): void {
   if (chatTimer) { clearTimeout(chatTimer); chatTimer = null }
 }
 
+function persistErrorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
+}
+
 /**
  * Immediately persist the current stores to the current project, then stop
  * auto-save from firing until resumeAutoSave() is called. Must be invoked
  * before resetProjectState() clears the stores on a project switch.
+ * Throws if any persist step fails and re-arms auto-save so the still-open
+ * project is not left unsaved and then emptied.
  */
 export async function flushAndSuspendAutoSave(): Promise<void> {
   suspended = true
@@ -35,21 +41,33 @@ export async function flushAndSuspendAutoSave(): Promise<void> {
   const review = useReviewStore.getState().items
   const lint = useLintStore.getState().items
   const chat = useChatStore.getState()
-  await Promise.allSettled([
-    saveReviewItems(projectPath, review),
-    saveLintItems(projectPath, lint),
-    saveChatPreferences(projectPath, {
+  const jobs: Array<[string, Promise<unknown>]> = [
+    ["review", saveReviewItems(projectPath, review)],
+    ["lint", saveLintItems(projectPath, lint)],
+    ["chat preferences", saveChatPreferences(projectPath, {
       useWebSearch: chat.useWebSearch,
       useAnyTxtSearch: chat.useAnyTxtSearch,
       agentMode: chat.agentMode,
       retrievalMode: chat.retrievalMode,
       selectedSkills: chat.selectedSkills,
       disabledSkills: chat.disabledSkills,
-    }),
-    chat.isStreaming
-      ? Promise.resolve()
-      : saveChatHistory(projectPath, chat.conversations, chat.messages),
-  ])
+    })],
+  ]
+  if (!chat.isStreaming) {
+    jobs.push(["chat history", saveChatHistory(projectPath, chat.conversations, chat.messages)])
+  }
+  const results = await Promise.allSettled(jobs.map(([, job]) => job))
+  const failures = results.flatMap((result, i) => {
+    if (result.status === "fulfilled") return []
+    return [`${jobs[i][0]}: ${persistErrorMessage(result.reason)}`]
+  })
+  if (failures.length > 0) {
+    // Stay on the current project: resume so later edits still persist, and
+    // surface the failure so callers do not empty in-memory state as if the
+    // flush had succeeded.
+    suspended = false
+    throw new Error(`Failed to flush auto-save before project switch: ${failures.join("; ")}`)
+  }
 }
 
 export function resumeAutoSave(): void {
