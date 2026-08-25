@@ -78,8 +78,73 @@ function newProjectIdentity(): ProjectIdentity {
  */
 export async function reissueImportedProjectIdentity(projectPath: string): Promise<string> {
   const identity = newProjectIdentity()
-  await writeFile(identityPath(projectPath), JSON.stringify(identity, null, 2))
+  const pp = normalizePath(projectPath)
+  await writeFile(identityPath(pp), JSON.stringify(identity, null, 2))
+  await remapImportedProjectBoundQueues(pp, identity.id)
   return identity.id
+}
+
+const IMPORTED_TASK_ARRAY_QUEUES = ["ingest-queue.json", "dedup-queue.json"] as const
+
+/**
+ * Archive copies still contain the source project's UUID inside per-project
+ * queue files. Restore/watch filters drop those tasks, and the cloned id
+ * would otherwise keep pointing at the original registry entry.
+ */
+async function remapImportedProjectBoundQueues(
+  projectPath: string,
+  projectId: string,
+): Promise<void> {
+  const wiki = `${projectPath}/.llm-wiki`
+  for (const name of IMPORTED_TASK_ARRAY_QUEUES) {
+    await remapProjectIdInTaskArray(`${wiki}/${name}`, projectId)
+  }
+  await remapProjectIdInFileChangeQueue(`${wiki}/file-change-queue.json`, projectId)
+}
+
+async function remapProjectIdInTaskArray(path: string, projectId: string): Promise<void> {
+  const parsed = await readOptionalJson(path)
+  if (parsed === undefined) return
+  if (!Array.isArray(parsed)) {
+    await writeFile(path, "[]")
+    return
+  }
+  await writeFile(path, JSON.stringify(parsed.map((task) => withProjectId(task, projectId)), null, 2))
+}
+
+async function remapProjectIdInFileChangeQueue(path: string, projectId: string): Promise<void> {
+  const parsed = await readOptionalJson(path)
+  if (parsed === undefined) return
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    await writeFile(path, JSON.stringify({ version: 1, tasks: [] }, null, 2))
+    return
+  }
+  const record = parsed as { tasks?: unknown }
+  const tasks = Array.isArray(record.tasks)
+    ? record.tasks.map((task) => withProjectId(task, projectId))
+    : []
+  await writeFile(path, JSON.stringify({ ...record, tasks }, null, 2))
+}
+
+function withProjectId(value: unknown, projectId: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const { project_id: _legacy, ...rest } = value as Record<string, unknown>
+  return { ...rest, projectId }
+}
+
+/** `undefined` if the file is missing; `null` if it is not valid JSON. */
+async function readOptionalJson(path: string): Promise<unknown | undefined> {
+  let raw: string
+  try {
+    raw = await readFile(path)
+  } catch {
+    return undefined
+  }
+  try {
+    return JSON.parse(raw) as unknown
+  } catch {
+    return null
+  }
 }
 
 // ── Global registry (Tauri plugin-store) ──────────────────────────────────
