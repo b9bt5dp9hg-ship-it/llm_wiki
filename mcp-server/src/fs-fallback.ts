@@ -659,6 +659,7 @@ export function buildGraphOffline(
     path: page.rel,
     linkCount: linkCounts.get(id) ?? 0,
   }))
+    .filter((node) => node.type.toLowerCase() !== "query")
 
   if (options.nodeType) nodes = nodes.filter((node) => node.type === options.nodeType)
   if (options.q) {

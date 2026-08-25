@@ -464,6 +464,28 @@ test("buildGraphOffline counts a repeated wikilink as one unique edge, matching 
   }
 })
 
+test("buildGraphOffline omits type=query pages like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-query-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[research-q]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "research-q.md"),
+      "---\ntitle: Deep research\ntype: Query\n---\n\nBack to [[alpha]].\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    assert.deepEqual(graph.nodes.map((node) => node.id).sort(), ["alpha"])
+    assert.equal(graph.edges.length, 0)
+    assert.equal(graph.nodes[0]?.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline uses live-API file-stem node ids, not wiki-relative paths", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-ids-"))
   try {
