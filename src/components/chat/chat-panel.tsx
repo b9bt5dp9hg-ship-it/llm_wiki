@@ -13,6 +13,7 @@ import { isReasoningOnlyResponseError, streamChat } from "@/lib/llm-client"
 import { supportsImageInput } from "@/lib/llm-providers"
 import { executeIngestWrites } from "@/lib/ingest"
 import { deleteFile, openPathInProject, readFile } from "@/commands/fs"
+import { conversationChatFilePath } from "@/lib/persist"
 import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
 import { hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import type { ChatAgentEvent, ChatAgentFileChange, ChatAgentStep, ChatUserInputRequest } from "@/lib/chat-agent-types"
@@ -245,8 +246,9 @@ function ConversationSidebar({
                         deleteConversation(conv.id)
                         // Delete persisted chat file
                         const proj = useWikiStore.getState().project
-                        if (proj) {
-                          deleteFile(`${proj.path}/.llm-wiki/chats/${conv.id}.json`).catch(() => {})
+                        const chatPath = proj ? conversationChatFilePath(proj.path, conv.id) : null
+                        if (chatPath) {
+                          deleteFile(chatPath).catch(() => {})
                         }
                       }}
                     >

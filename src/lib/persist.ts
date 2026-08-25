@@ -57,6 +57,34 @@ export interface ChatPreferences {
   disabledSkills: string[]
 }
 
+/** Generated chat IDs are `conv_<timestamp>_<rand>`; tests also use short slugs. */
+const CONVERSATION_ID_MAX_LENGTH = 128
+const SAFE_CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+const WINDOWS_RESERVED_CONVERSATION_ID = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
+
+/**
+ * Conversation ids are used as a single filename under `.llm-wiki/chats/`.
+ * Reject anything that is not a single safe path segment so a tampered
+ * `conversations.json` or message payload cannot traverse out of that directory.
+ */
+export function isSafeConversationId(id: unknown): id is string {
+  if (typeof id !== "string" || id.length === 0 || id.length > CONVERSATION_ID_MAX_LENGTH) {
+    return false
+  }
+  if (/[\x00-\x1f]/.test(id)) return false
+  if (!SAFE_CONVERSATION_ID.test(id)) return false
+  if (WINDOWS_RESERVED_CONVERSATION_ID.test(id)) return false
+  return true
+}
+
+export function conversationChatFilePath(
+  projectPath: string,
+  conversationId: string,
+): string | null {
+  if (!isSafeConversationId(conversationId)) return null
+  return `${normalizePath(projectPath)}/.llm-wiki/chats/${conversationId}.json`
+}
+
 function stripPersistedMessageImages(msg: DisplayMessage): DisplayMessage {
   const withoutImages = (() => {
     if (!msg.images || msg.images.length === 0) return msg
@@ -84,15 +112,20 @@ export async function saveChatHistory(
   const pp = normalizePath(projectPath)
   await ensureDir(pp)
 
+  const safeConversations = conversations.filter((conversation) =>
+    isSafeConversationId(conversation.id),
+  )
+
   // Save conversation list
   await writeFile(
     `${pp}/.llm-wiki/conversations.json`,
-    JSON.stringify(conversations, null, 2)
+    JSON.stringify(safeConversations, null, 2)
   )
 
   // Save each conversation's messages separately
   const byConversation = new Map<string, DisplayMessage[]>()
   for (const msg of messages) {
+    if (!isSafeConversationId(msg.conversationId)) continue
     const list = byConversation.get(msg.conversationId) ?? []
     // Images can be multi-megabyte base64 payloads. Keep them in memory for the
     // current chat turn, but don't persist them into chat JSON where they would
@@ -102,12 +135,11 @@ export async function saveChatHistory(
   }
 
   for (const [convId, msgs] of byConversation) {
+    const chatPath = conversationChatFilePath(pp, convId)
+    if (!chatPath) continue
     // Keep last 100 messages per conversation
     const toSave = msgs.slice(-100)
-    await writeFile(
-      `${pp}/.llm-wiki/chats/${convId}.json`,
-      JSON.stringify(toSave, null, 2)
-    )
+    await writeFile(chatPath, JSON.stringify(toSave, null, 2))
   }
 }
 
@@ -116,14 +148,25 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
   try {
     // Try new format: separate files per conversation
     const convContent = await readFile(`${pp}/.llm-wiki/conversations.json`)
-    const conversations = JSON.parse(convContent) as Conversation[]
+    const parsedConversations = JSON.parse(convContent) as Conversation[]
+    const conversations = Array.isArray(parsedConversations)
+      ? parsedConversations.filter((conversation) => isSafeConversationId(conversation?.id))
+      : []
 
     const allMessages: DisplayMessage[] = []
     for (const conv of conversations) {
+      const chatPath = conversationChatFilePath(pp, conv.id)
+      if (!chatPath) continue
       try {
-        const msgContent = await readFile(`${pp}/.llm-wiki/chats/${conv.id}.json`)
+        const msgContent = await readFile(chatPath)
         const msgs = JSON.parse(msgContent) as DisplayMessage[]
-        allMessages.push(...msgs)
+        if (!Array.isArray(msgs)) continue
+        allMessages.push(
+          ...msgs.map((message) => ({
+            ...message,
+            conversationId: conv.id,
+          })),
+        )
       } catch {
         // Conversation file missing, skip
       }
@@ -217,13 +260,12 @@ async function recoverChatHistoryFromOrphanChatFiles(projectPath: string): Promi
         const parsed = JSON.parse(raw)
         if (!Array.isArray(parsed)) continue
         const id = file.name.replace(/\.json$/i, "")
+        if (!isSafeConversationId(id)) continue
         const messages = (parsed as DisplayMessage[])
           .filter((message) => message && typeof message === "object")
           .map((message) => ({
             ...message,
-            conversationId: typeof message.conversationId === "string" && message.conversationId
-              ? message.conversationId
-              : id,
+            conversationId: id,
           }))
         const conversation = conversationFromMessages(id, messages)
         if (!conversation) continue
