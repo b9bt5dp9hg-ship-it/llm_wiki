@@ -126,7 +126,15 @@ export function setupAutoSave(): void {
   // Auto-save chat conversations and messages (debounced 2s, skip during streaming)
   useChatStore.subscribe((state) => {
     if (suspended) return
-    if (state.isStreaming) return
+    if (state.isStreaming) {
+      // Drop a timer queued before streaming started. Otherwise a chat
+      // deleted during the stream is rewritten from that stale snapshot.
+      if (chatTimer) {
+        clearTimeout(chatTimer)
+        chatTimer = null
+      }
+      return
+    }
     const projectPath = useWikiStore.getState().project?.path
     if (chatTimer) clearTimeout(chatTimer)
     chatTimer = setTimeout(() => {

@@ -204,4 +204,33 @@ describe("auto-save project-switch guard", () => {
       disabledSkills: [],
     })
   })
+
+  it("does not persist a pre-stream chat snapshot after the chat is deleted during streaming", () => {
+    setProjectPath("/proj/A")
+    const doomed = { id: "c1", title: "doomed", createdAt: 1, updatedAt: 1 }
+    useChatStore.setState({
+      conversations: [doomed],
+      messages: [{
+        id: "m1",
+        role: "user",
+        content: "hi",
+        timestamp: 1,
+        conversationId: "c1",
+      }],
+      isStreaming: false,
+    })
+
+    // Streaming starts: the subscribe handler currently returns before
+    // clearing the already-queued 2s save of `doomed`.
+    useChatStore.setState({ isStreaming: true })
+    useChatStore.setState({
+      conversations: [],
+      messages: [],
+    })
+
+    vi.runAllTimers()
+
+    expect(saveChatHistory).not.toHaveBeenCalled()
+    expect(saveChatPreferences).not.toHaveBeenCalled()
+  })
 })
