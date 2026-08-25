@@ -192,23 +192,30 @@ async function saveRegistry(registry: ProjectRegistry): Promise<void> {
   await store.set(REGISTRY_KEY, registry)
 }
 
+const REGISTRY_LOCK = "\0project-registry"
+
 /**
  * Create or update the registry entry for this project. Call on open /
  * create / switch so the path always reflects the latest known location.
+ *
+ * Registry updates are read-modify-write. Serialize them so concurrent
+ * open/create of two projects cannot drop the other project's entry.
  */
 export async function upsertProjectInfo(
   id: string,
   path: string,
   name: string,
 ): Promise<void> {
-  const registry = await loadRegistry()
-  registry[id] = {
-    id,
-    path: normalizePath(path),
-    name,
-    lastOpened: Date.now(),
-  }
-  await saveRegistry(registry)
+  await withProjectLock(REGISTRY_LOCK, async () => {
+    const registry = await loadRegistry()
+    registry[id] = {
+      id,
+      path: normalizePath(path),
+      name,
+      lastOpened: Date.now(),
+    }
+    await saveRegistry(registry)
+  })
 }
 
 /**
