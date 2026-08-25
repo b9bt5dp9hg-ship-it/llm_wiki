@@ -55,15 +55,30 @@ export async function ensureProjectId(projectPath: string): Promise<string> {
   } catch {
     // missing or corrupt — fall through to create
   }
-  const identity: ProjectIdentity = {
-    id: crypto.randomUUID(),
-    createdAt: Date.now(),
-  }
+  const identity = newProjectIdentity()
   try {
     await writeFile(path, JSON.stringify(identity, null, 2))
   } catch (err) {
     console.warn("[project-identity] failed to write identity file:", err)
   }
+  return identity.id
+}
+
+function newProjectIdentity(): ProjectIdentity {
+  return {
+    id: crypto.randomUUID(),
+    createdAt: Date.now(),
+  }
+}
+
+/**
+ * Mint a fresh on-disk identity for an imported project copy.
+ * Archive import must not reuse the source project's stable UUID, or
+ * queue tasks and the global registry would collide with the original.
+ */
+export async function reissueImportedProjectIdentity(projectPath: string): Promise<string> {
+  const identity = newProjectIdentity()
+  await writeFile(identityPath(projectPath), JSON.stringify(identity, null, 2))
   return identity.id
 }
 

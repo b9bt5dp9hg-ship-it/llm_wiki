@@ -43,6 +43,7 @@ import {
   type FileHistoryStats,
 } from "@/commands/fs"
 import { addToRecentProjects } from "@/lib/project-store"
+import { reissueImportedProjectIdentity } from "@/lib/project-identity"
 
 interface GroupUiEntry {
   group: DuplicateGroup
@@ -223,6 +224,7 @@ export function MaintenanceSection() {
     setProjectToolBusy(true)
     try {
       const path = await invoke<string>("import_project_archive", { archivePath: archive, destination })
+      await reissueImportedProjectIdentity(path)
       const imported = await openProject(path)
       await addToRecentProjects(imported)
       setProjectToolStatus(t("settings.sections.maintenance.projectData.imported", { name: imported.name }))
