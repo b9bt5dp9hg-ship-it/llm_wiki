@@ -1,6 +1,6 @@
 import { writeFile, readFile, createDirectory, listDirectory } from "@/commands/fs"
 import { normalizeReviewItems, type ReviewItem } from "@/stores/review-store"
-import type { LintItem } from "@/stores/lint-store"
+import { normalizeLintItems, type LintItem } from "@/stores/lint-store"
 import type { DisplayMessage, Conversation } from "@/stores/chat-store"
 import type { ChatAgentMode, ChatRetrievalMode } from "@/lib/chat-agent-types"
 import { normalizePath } from "@/lib/path-utils"
@@ -37,7 +37,7 @@ export async function loadLintItems(projectPath: string): Promise<LintItem[]> {
   const pp = normalizePath(projectPath)
   try {
     const content = await readFile(`${pp}/.llm-wiki/lint.json`)
-    return JSON.parse(content) as LintItem[]
+    return normalizeLintItems(JSON.parse(content))
   } catch {
     return []
   }

@@ -172,6 +172,25 @@ describe("lint persistence — round-trip", () => {
     expect(loaded).toEqual([])
   })
 
+  it("returns empty array when lint.json is valid JSON but not an array", async () => {
+    await writeFileRaw(`${tmp.path}/.llm-wiki/lint.json`, JSON.stringify({ items: [makeLint()] }))
+    const loaded = await loadLintItems(tmp.path)
+    expect(loaded).toEqual([])
+  })
+
+  it("drops malformed lint entries and keeps valid ones", async () => {
+    await writeFileRaw(`${tmp.path}/.llm-wiki/lint.json`, JSON.stringify([
+      makeLint({ id: "lint-keep", page: "ok.md" }),
+      null,
+      { id: 3, page: "nope.md" },
+      "not-an-item",
+      makeLint({ id: "lint-keep-2", page: "ok-2.md", type: "broken-link", severity: "warning" }),
+    ]))
+    const loaded = await loadLintItems(tmp.path)
+    expect(loaded.map((item) => item.id)).toEqual(["lint-keep", "lint-keep-2"])
+    expect(loaded[0].page).toBe("ok.md")
+  })
+
   it("preserves all LintItem fields through JSON round-trip including affectedPages", async () => {
     const items: LintItem[] = [
       {

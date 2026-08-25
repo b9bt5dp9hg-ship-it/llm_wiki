@@ -14,6 +14,45 @@ export interface LintItem {
   createdAt: number
 }
 
+const LINT_TYPES = new Set<LintResult["type"]>(["orphan", "broken-link", "no-outlinks", "semantic"])
+const LINT_SEVERITIES = new Set<LintResult["severity"]>(["warning", "info"])
+
+/**
+ * Coerce persisted lint.json into LintItem[]. A non-array document or a
+ * truncated write must not reach the store — lint-view maps/filters
+ * `items` and would throw on null entries or a bare object.
+ */
+export function normalizeLintItems(value: unknown): LintItem[] {
+  if (!Array.isArray(value)) return []
+  const items: LintItem[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue
+    const item = raw as Record<string, unknown>
+    if (typeof item.id !== "string" || !item.id) continue
+    if (typeof item.type !== "string" || !LINT_TYPES.has(item.type as LintResult["type"])) continue
+    if (typeof item.severity !== "string" || !LINT_SEVERITIES.has(item.severity as LintResult["severity"])) continue
+    if (typeof item.page !== "string" || typeof item.detail !== "string") continue
+    if (typeof item.createdAt !== "number" || !Number.isFinite(item.createdAt)) continue
+    const normalized: LintItem = {
+      id: item.id,
+      type: item.type as LintResult["type"],
+      severity: item.severity as LintResult["severity"],
+      page: item.page,
+      detail: item.detail,
+      createdAt: item.createdAt,
+    }
+    if (Array.isArray(item.affectedPages)) {
+      const pages = item.affectedPages.filter((page): page is string => typeof page === "string")
+      if (pages.length > 0) normalized.affectedPages = pages
+    }
+    if (typeof item.brokenTarget === "string") normalized.brokenTarget = item.brokenTarget
+    if (typeof item.suggestedTarget === "string") normalized.suggestedTarget = item.suggestedTarget
+    if (typeof item.suggestedSource === "string") normalized.suggestedSource = item.suggestedSource
+    items.push(normalized)
+  }
+  return items
+}
+
 function lintResultToItem(result: LintResult): LintItem {
   return {
     type: result.type,
