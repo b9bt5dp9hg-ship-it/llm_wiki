@@ -7,6 +7,7 @@ import {
   writeFileRaw,
 } from "@/test-helpers/fs-temp"
 import { createDeferred, flushIO, waitFor } from "@/test-helpers/deferred"
+import { __resetProjectLocksForTesting } from "@/lib/project-mutex"
 
 vi.mock("@/commands/fs", () => realFs)
 
@@ -54,6 +55,7 @@ describe("source lifecycle source deletion", () => {
   beforeEach(async () => {
     clearQueueState()
     mockAutoIngest.mockReset()
+    __resetProjectLocksForTesting()
     tmp = await createTempProject("source-lifecycle-delete")
     pathByIdRef.map = { [TEST_ID]: tmp.path }
     await writeFileRaw(`${tmp.path}/raw/sources/project-a/config.yaml`, "name: alpha\n")

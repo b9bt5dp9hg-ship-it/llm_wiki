@@ -465,46 +465,48 @@ export async function deleteSourceFiles(
   let rewrittenSourcePages = 0
   let skippedPages = 0
 
-  let allMd: FileNode[] = []
-  try {
-    allMd = flattenMd(await listDirectory(`${pp}/wiki`))
-  } catch (err) {
-    console.warn("[source-lifecycle] failed to scan wiki sources during delete:", err)
-  }
-
-  for (const file of allMd) {
-    let content: string
+  await withProjectLock(pp, async () => {
+    let allMd: FileNode[] = []
     try {
-      content = await readFile(file.path)
+      allMd = flattenMd(await listDirectory(`${pp}/wiki`))
     } catch (err) {
-      console.warn(`[source-lifecycle] failed to read ${file.path}:`, err)
-      continue
+      console.warn("[source-lifecycle] failed to scan wiki sources during delete:", err)
     }
 
-    const sources = parseSources(content)
-    if (sources.length === 0) {
-      skippedPages++
-      continue
-    }
-
-    const survivors = sources.filter(
-      (source) => !sourceNameMatchesAny(source, deletingIdentities, deletingNames),
-    )
-    if (survivors.length === sources.length) {
-      continue
-    }
-
-    if (survivors.length === 0) {
-      pagesToDelete.push(file.path)
-    } else {
+    for (const file of allMd) {
+      let content: string
       try {
-        await writeFile(file.path, writeSources(content, survivors))
-        rewrittenSourcePages++
+        content = await readFile(file.path)
       } catch (err) {
-        console.warn(`[source-lifecycle] failed to rewrite sources for ${file.path}:`, err)
+        console.warn(`[source-lifecycle] failed to read ${file.path}:`, err)
+        continue
+      }
+
+      const sources = parseSources(content)
+      if (sources.length === 0) {
+        skippedPages++
+        continue
+      }
+
+      const survivors = sources.filter(
+        (source) => !sourceNameMatchesAny(source, deletingIdentities, deletingNames),
+      )
+      if (survivors.length === sources.length) {
+        continue
+      }
+
+      if (survivors.length === 0) {
+        pagesToDelete.push(file.path)
+      } else {
+        try {
+          await writeFile(file.path, writeSources(content, survivors))
+          rewrittenSourcePages++
+        } catch (err) {
+          console.warn(`[source-lifecycle] failed to rewrite sources for ${file.path}:`, err)
+        }
       }
     }
-  }
+  })
 
   let deletedWikiPaths: string[] = []
   if (pagesToDelete.length > 0) {
