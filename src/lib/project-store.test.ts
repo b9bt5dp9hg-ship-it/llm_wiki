@@ -1,5 +1,35 @@
-import { describe, expect, it } from "vitest"
-import { __projectStoreTest } from "./project-store"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const { memory, save } = vi.hoisted(() => {
+  const memory = new Map<string, unknown>()
+  const save = vi.fn(async () => {})
+  return { memory, save }
+})
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({
+    async get(key: string) {
+      return memory.get(key)
+    },
+    async set(key: string, value: unknown) {
+      memory.set(key, value)
+    },
+    async delete(key: string) {
+      memory.delete(key)
+    },
+    save,
+  })),
+}))
+
+import {
+  __projectStoreTest,
+  getLastProject,
+  getRecentProjects,
+  removeFromRecentProjects,
+} from "./project-store"
+
+const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
+const GONE = { id: "gone-id", name: "Gone", path: "/tmp/gone-wiki" }
 
 describe("project-store MinerU config normalization", () => {
   it("preserves valid MinerU config values", () => {
@@ -96,5 +126,32 @@ describe("project-store custom LLM preset normalization", () => {
       { id: "custom-one", label: "Team Gateway" },
       { id: "custom-two", label: "x".repeat(80) },
     ])
+  })
+})
+
+describe("removeFromRecentProjects durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+    memory.set("recentProjects", [GONE, KEEP])
+    memory.set("lastProject", GONE)
+  })
+
+  it("flushes the removal to disk instead of relying on the 100ms autoSave debounce", async () => {
+    await removeFromRecentProjects(GONE.path)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toBeNull()
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("still force-saves when lastProject already points elsewhere", async () => {
+    memory.set("lastProject", KEEP)
+
+    await removeFromRecentProjects(GONE.path)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toEqual(KEEP)
+    expect(save).toHaveBeenCalledTimes(1)
   })
 })

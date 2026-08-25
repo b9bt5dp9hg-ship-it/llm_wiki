@@ -378,6 +378,10 @@ export async function removeFromRecentProjects(
   if (last && last.path === path) {
     await store.delete(LAST_PROJECT_KEY)
   }
+  // Force-flush. autoSave is a 100ms debounce — removing a recent
+  // project and quitting (or auto-opening lastProject) inside that
+  // window would restore the entry on the next launch.
+  await store.save()
 }
 
 const LANGUAGE_KEY = "language"
