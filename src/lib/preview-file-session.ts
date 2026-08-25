@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "@/commands/fs"
+import { fileExists, readFile, writeFile } from "@/commands/fs"
 
 export type PreviewFileLoadOutcome =
   | { status: "applied"; path: string; content: string; token: number }
@@ -38,11 +38,13 @@ function createSerialQueue(): { enqueue: <T>(job: () => Promise<T>) => Promise<T
  * Latest-wins guard for overlapping preview reads, plus a serial write
  * queue. A slower older readFile must not replace the currently selected
  * file's editor body, and a slower older writeFile must not persist after
- * a newer save of the same path.
+ * a newer save of the same path. Writes skip paths that no longer exist
+ * so a pending auto-save cannot recreate a deleted source.
  */
 export function createPreviewFileSession(
   readFileFn: (path: string) => Promise<string> = readFile,
   writeFileFn: (path: string, content: string) => Promise<void> = writeFile,
+  fileExistsFn: (path: string) => Promise<boolean> = fileExists,
 ) {
   let generation = 0
   let writeGeneration = 0
@@ -87,6 +89,9 @@ export function createPreviewFileSession(
       const token = ++writeGeneration
       return writes.enqueue(async () => {
         try {
+          if (!(await fileExistsFn(path))) {
+            return { status: "stale", token }
+          }
           await writeFileFn(path, content)
         } catch (error) {
           if (token !== writeGeneration || activePath !== path) {

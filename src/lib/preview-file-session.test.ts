@@ -95,7 +95,7 @@ describe("createPreviewFileSession", () => {
       return Promise.resolve()
     })
 
-    const session = createPreviewFileSession(vi.fn(), writeFile)
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
     session.activate("/wiki/a.md")
     const writeV1 = session.write("/wiki/a.md", "V1")
     await flushMicrotasks()
@@ -130,7 +130,7 @@ describe("createPreviewFileSession", () => {
       return Promise.resolve()
     })
 
-    const session = createPreviewFileSession(vi.fn(), writeFile)
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
     session.activate("/wiki/a.md")
     const writeA = session.write("/wiki/a.md", "draft A")
     await flushMicrotasks()
@@ -147,7 +147,7 @@ describe("createPreviewFileSession", () => {
       .mockImplementationOnce(() => older.promise)
       .mockResolvedValueOnce(undefined)
 
-    const session = createPreviewFileSession(vi.fn(), writeFile)
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
     session.activate("/wiki/a.md")
     const writeV1 = session.write("/wiki/a.md", "V1")
     await flushMicrotasks()
@@ -160,8 +160,19 @@ describe("createPreviewFileSession", () => {
 
   it("propagates a failure from the current file write", async () => {
     const writeFile = vi.fn().mockRejectedValueOnce(new Error("disk full"))
-    const session = createPreviewFileSession(vi.fn(), writeFile)
+    const session = createPreviewFileSession(vi.fn(), writeFile, async () => true)
     session.activate("/wiki/a.md")
     await expect(session.write("/wiki/a.md", "V1")).rejects.toThrow("disk full")
+  })
+
+  it("does not recreate a file that was deleted before a pending write ran", async () => {
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const fileExists = vi.fn().mockResolvedValue(false)
+    const session = createPreviewFileSession(vi.fn(), writeFile, fileExists)
+    session.activate("/proj/raw/sources/a.md")
+    await expect(session.write("/proj/raw/sources/a.md", "draft after delete"))
+      .resolves.toMatchObject({ status: "stale" })
+    expect(fileExists).toHaveBeenCalledWith("/proj/raw/sources/a.md")
+    expect(writeFile).not.toHaveBeenCalled()
   })
 })
