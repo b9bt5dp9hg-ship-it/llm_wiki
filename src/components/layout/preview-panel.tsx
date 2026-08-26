@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useRef } from "react"
 import { X } from "lucide-react"
+import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
 import { getFileCategory, isBinary, isExtractedTextPreviewFile } from "@/lib/file-types"
 import { WikiEditor } from "@/components/editor/wiki-editor"
@@ -8,6 +9,7 @@ import { getFileName } from "@/lib/path-utils"
 import { createPreviewFileSession, type PreviewFileWriteOutcome } from "@/lib/preview-file-session"
 
 export function PreviewPanel() {
+  const { t } = useTranslation()
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const fileContent = useWikiStore((s) => s.fileContent)
   const previewContentPath = useWikiStore((s) => s.previewContentPath)
@@ -118,6 +120,8 @@ export function PreviewPanel() {
           {fileName}
         </span>
         <button
+          type="button"
+          aria-label={t("common.close")}
           onClick={closePreview}
           className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent"
         >
