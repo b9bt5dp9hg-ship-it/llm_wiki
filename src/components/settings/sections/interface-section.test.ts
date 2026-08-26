@@ -13,4 +13,11 @@ describe("InterfaceSection accessibility", () => {
     expect(section).toMatch(/role="radiogroup"[\s\S]*aria-label=\{t\("settings\.sections\.interface\.theme"\)\}/)
     expect(section).toMatch(/key=\{th\.value\}[\s\S]*role="radio"[\s\S]*aria-checked=\{active\}/)
   })
+
+  it("connects the zoom label and keeps its icon controls non-submitting", () => {
+    expect(section).toMatch(/<Label htmlFor="interface-zoom">/)
+    expect(section).toMatch(/id="interface-zoom"/)
+    expect(section).toMatch(/<button\s+type="button"[\s\S]*aria-label=\{t\("settings\.sections\.interface\.zoomOut"\)\}/)
+    expect(section).toMatch(/<button\s+type="button"[\s\S]*aria-label=\{t\("settings\.sections\.interface\.zoomIn"\)\}/)
+  })
 })
