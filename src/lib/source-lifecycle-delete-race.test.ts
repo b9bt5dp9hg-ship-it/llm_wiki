@@ -43,7 +43,7 @@ vi.mock("@/lib/embedding", () => ({
   removePageEmbedding: vi.fn().mockResolvedValue(undefined),
 }))
 
-import { deleteSourceFiles } from "./source-lifecycle"
+import { deleteSourceFiles, migrateSourcePath } from "./source-lifecycle"
 import { __resetProjectLocksForTesting } from "./project-mutex"
 
 const PROJECT = "/proj"
@@ -133,5 +133,62 @@ describe("deleteSourceFiles overlapping sources rewrites", () => {
       expect(shared).not.toContain("b.yaml")
     }
     expect(files.has(B_ONLY)).toBe(false)
+  })
+
+  it("does not drop a source identity when two path migrations overlap", async () => {
+    const sourceA2 = `${PROJECT}/raw/sources/a-renamed.yaml`
+    const sourceB2 = `${PROJECT}/raw/sources/b-renamed.yaml`
+    const files = new Map<string, string>([
+      [SHARED, '---\nsources: ["a.yaml", "b.yaml"]\n---\n# Shared\n'],
+      [LOG, "# Wiki Log\n"],
+      [sourceA2, "name: a\n"],
+      [sourceB2, "name: b\n"],
+    ])
+    const firstSharedReadStarted = createDeferred<void>()
+    const releaseFirstSharedRead = createDeferred<void>()
+    let sharedReads = 0
+
+    mockFileExists.mockImplementation(async (path) => files.has(path))
+    mockDeleteFile.mockImplementation(async (path) => {
+      files.delete(path)
+    })
+    mockWriteFile.mockImplementation(async (path, content) => {
+      files.set(path, content)
+    })
+    mockListDirectory.mockImplementation(async (path) => {
+      if (path === `${PROJECT}/wiki`) return wikiTree(files)
+      return [
+        fileNode(sourceA2),
+        fileNode(sourceB2),
+      ]
+    })
+    mockReadFile.mockImplementation(async (path) => {
+      if (path === SHARED) {
+        sharedReads += 1
+        const snapshot = files.get(path)
+        if (snapshot === undefined) throw new Error(`missing ${path}`)
+        if (sharedReads === 1) {
+          firstSharedReadStarted.resolve()
+          await releaseFirstSharedRead.promise
+        }
+        return snapshot
+      }
+      const content = files.get(path)
+      if (content === undefined) throw new Error(`missing ${path}`)
+      return content
+    })
+
+    const migrateA = migrateSourcePath(PROJECT, SOURCE_A, sourceA2)
+    await firstSharedReadStarted.promise
+    const migrateB = migrateSourcePath(PROJECT, SOURCE_B, sourceB2)
+    await flushMicrotasks()
+    releaseFirstSharedRead.resolve()
+    await Promise.all([migrateA, migrateB])
+
+    const shared = files.get(SHARED) ?? ""
+    expect(shared).toContain("a-renamed.yaml")
+    expect(shared).toContain("b-renamed.yaml")
+    expect(shared).not.toContain('"a.yaml"')
+    expect(shared).not.toContain('"b.yaml"')
   })
 })

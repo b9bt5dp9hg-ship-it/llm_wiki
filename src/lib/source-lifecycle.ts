@@ -138,6 +138,14 @@ export async function migrateSourcePath(
   newSourcePath: string,
 ): Promise<number> {
   const pp = normalizePath(projectPath)
+  return withProjectLock(pp, () => migrateSourcePathLocked(pp, oldSourcePath, newSourcePath))
+}
+
+async function migrateSourcePathLocked(
+  pp: string,
+  oldSourcePath: string,
+  newSourcePath: string,
+): Promise<number> {
   const oldIdentity = sourceIdentityForPath(pp, oldSourcePath)
   const newIdentity = sourceIdentityForPath(pp, newSourcePath)
   // Cache keys preserve spelling, so case-only renames still require a
