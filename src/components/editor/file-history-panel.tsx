@@ -30,10 +30,10 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   }).diff : ""
 
   return <>
-    <button type="button" onClick={() => void show()} className="absolute right-3 top-3 z-20 rounded-md border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:text-foreground" title={t("preview.history")}><Clock3 className="h-4 w-4" /></button>
-    {open && <div className="absolute inset-0 z-40 flex bg-background">
+    <button type="button" onClick={() => void show()} className="absolute right-3 top-3 z-20 rounded-md border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:text-foreground" title={t("preview.history")} aria-label={t("preview.history")}><Clock3 className="h-4 w-4" /></button>
+    {open && <div role="dialog" aria-modal="true" aria-labelledby="file-history-title" className="absolute inset-0 z-40 flex bg-background">
       <aside className="w-72 shrink-0 border-r p-3">
-        <div className="mb-3 flex items-center justify-between"><strong className="text-sm">{t("preview.history")}</strong><button type="button" onClick={() => setOpen(false)}><X className="h-4 w-4" /></button></div>
+        <div className="mb-3 flex items-center justify-between"><strong id="file-history-title" className="text-sm">{t("preview.history")}</strong><button type="button" aria-label={t("common.close")} onClick={() => setOpen(false)}><X className="h-4 w-4" /></button></div>
         <div className="space-y-1 overflow-auto">
           {loading && <p className="text-xs text-muted-foreground">{t("preview.historyLoading")}</p>}
           {!loading && entries.length === 0 && <p className="text-xs text-muted-foreground">{t("preview.historyEmpty")}</p>}
