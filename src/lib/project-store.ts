@@ -51,6 +51,7 @@ let projectLlmOverrideWrite = Promise.resolve()
 let customLlmPresetWrite = Promise.resolve()
 let recentProjectsWrite = Promise.resolve()
 let projectOutputLanguageWrite = Promise.resolve()
+let projectFileSyncWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   const store = await getStore()
@@ -442,14 +443,16 @@ export async function loadOutputLanguage(projectId?: string): Promise<OutputLang
 }
 
 export async function saveProjectFileSyncEnabled(enabled: boolean, projectId?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
+  const write = projectFileSyncWrite.then(async () => {
+    const store = await getStore()
     const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-    await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, [projectId]: enabled })
-    return
-  }
-  const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-  await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, default: enabled })
+    await store.set(PROJECT_FILE_SYNC_KEY, {
+      ...existing,
+      [projectId ?? "default"]: enabled,
+    })
+  })
+  projectFileSyncWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadProjectFileSyncEnabled(projectId?: string): Promise<boolean> {

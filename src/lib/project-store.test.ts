@@ -7,6 +7,7 @@ const { memory, save, getHooks } = vi.hoisted(() => {
   const getHooks = {
     afterRecentSnapshot: undefined as undefined | (() => Promise<void>),
     afterOutputLanguageSnapshot: undefined as undefined | (() => Promise<void>),
+    afterFileSyncSnapshot: undefined as undefined | (() => Promise<void>),
   }
   return { memory, save, getHooks }
 })
@@ -20,6 +21,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
       }
       if (key === "projectOutputLanguages" && getHooks.afterOutputLanguageSnapshot) {
         await getHooks.afterOutputLanguageSnapshot()
+      }
+      if (key === "projectFileSyncEnabled" && getHooks.afterFileSyncSnapshot) {
+        await getHooks.afterFileSyncSnapshot()
       }
       return value
     },
@@ -38,8 +42,10 @@ import {
   getLastProject,
   getRecentProjects,
   loadOutputLanguage,
+  loadProjectFileSyncEnabled,
   removeFromRecentProjects,
   saveOutputLanguage,
+  saveProjectFileSyncEnabled,
 } from "./project-store"
 
 const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
@@ -226,5 +232,36 @@ describe("project output-language write serialization", () => {
 
     await expect(loadOutputLanguage("project-a")).resolves.toBe("English")
     await expect(loadOutputLanguage("project-b")).resolves.toBe("Chinese")
+  })
+})
+
+describe("project file-sync write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    getHooks.afterFileSyncSnapshot = undefined
+  })
+
+  it("does not lose another project's setting when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterFileSyncSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = saveProjectFileSyncEnabled(false, "project-a")
+    await firstGetStarted.promise
+    const second = saveProjectFileSyncEnabled(false, "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterFileSyncSnapshot = undefined
+
+    await expect(loadProjectFileSyncEnabled("project-a")).resolves.toBe(false)
+    await expect(loadProjectFileSyncEnabled("project-b")).resolves.toBe(false)
   })
 })
