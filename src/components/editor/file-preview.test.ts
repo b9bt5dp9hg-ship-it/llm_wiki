@@ -46,6 +46,17 @@ describe("parseDelimitedContent", () => {
   })
 })
 
+describe("delimited table accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function DelimitedTablePreview")
+  const end = source.indexOf("function HtmlPreview", start)
+  const preview = source.slice(start, end)
+
+  it("gives the table an accessible caption", () => {
+    expect(preview).toMatch(/<caption className="sr-only">\{filePath\}<\/caption>/)
+  })
+})
+
 describe("fullscreen image preview semantics", () => {
   const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
   const start = source.indexOf("function ImagePreview")

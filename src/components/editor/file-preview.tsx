@@ -257,7 +257,7 @@ export function parseDelimitedContent(content: string, delimiter: string, maxRow
 
 function DelimitedTablePreview({ filePath, content, delimiter }: { filePath: string; content: string; delimiter: string }) {
   const rows = useMemo(() => parseDelimitedContent(content, delimiter), [content, delimiter])
-  return <div className="h-full overflow-auto p-4"><div className="mb-2 text-xs text-muted-foreground">{filePath}</div><table className="min-w-full border-collapse text-xs"><thead className="sticky top-0 bg-muted">{rows[0] && <tr>{rows[0].map((cell, index) => <th key={index} className="border px-2 py-1 text-left">{cell}</th>)}</tr>}</thead><tbody>{rows.slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="max-w-80 border px-2 py-1 align-top">{cell}</td>)}</tr>)}</tbody></table></div>
+  return <div className="h-full overflow-auto p-4"><div className="mb-2 text-xs text-muted-foreground">{filePath}</div><table className="min-w-full border-collapse text-xs"><caption className="sr-only">{filePath}</caption><thead className="sticky top-0 bg-muted">{rows[0] && <tr>{rows[0].map((cell, index) => <th key={index} className="border px-2 py-1 text-left">{cell}</th>)}</tr>}</thead><tbody>{rows.slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="max-w-80 border px-2 py-1 align-top">{cell}</td>)}</tr>)}</tbody></table></div>
 }
 
 function HtmlPreview({
