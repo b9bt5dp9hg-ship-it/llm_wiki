@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Clock3, RotateCcw, X } from "lucide-react"
 import { listFileHistory, restoreFileHistory, type FileHistoryEntry } from "@/commands/fs"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { useWikiStore } from "@/stores/wiki-store"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 export function FileHistoryButton({ filePath, currentContent }: { filePath: string; currentContent: string }) {
   const { t } = useTranslation()
@@ -13,6 +14,20 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   const [entries, setEntries] = useState<FileHistoryEntry[]>([])
   const [selected, setSelected] = useState<FileHistoryEntry | null>(null)
   const [loading, setLoading] = useState(false)
+  const historyDialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      historyDialogRef.current?.querySelector<HTMLElement>("button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
+    }
+  }, [open])
   if (!project) return null
 
   const show = async () => {
@@ -31,7 +46,21 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
 
   return <>
     <button type="button" onClick={() => void show()} className="absolute right-3 top-3 z-20 rounded-md border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:text-foreground" title={t("preview.history")} aria-label={t("preview.history")}><Clock3 className="h-4 w-4" /></button>
-    {open && <div role="dialog" aria-modal="true" aria-labelledby="file-history-title" className="absolute inset-0 z-40 flex bg-background">
+    {open && <div
+      ref={historyDialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="file-history-title"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault()
+          setOpen(false)
+          return
+        }
+        trapTabInContainer(event.nativeEvent, event.currentTarget)
+      }}
+      className="absolute inset-0 z-40 flex bg-background"
+    >
       <aside className="w-72 shrink-0 border-r p-3">
         <div className="mb-3 flex items-center justify-between"><strong id="file-history-title" className="text-sm">{t("preview.history")}</strong><button type="button" aria-label={t("common.close")} onClick={() => setOpen(false)}><X className="h-4 w-4" /></button></div>
         <div className="space-y-1 overflow-auto">

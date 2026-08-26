@@ -12,4 +12,12 @@ describe("file history panel accessibility", () => {
     expect(panel).toMatch(/id="file-history-title"/)
     expect(panel).toMatch(/aria-label=\{t\("common\.close"\)\}/)
   })
+
+  it("owns focus, traps Tab, closes on Escape, and restores focus", () => {
+    expect(panel).toMatch(/document\.activeElement/)
+    expect(panel).toMatch(/historyDialogRef\.current\?\.querySelector<HTMLElement>[\s\S]*\.focus\(\)/)
+    expect(panel).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(panel).toMatch(/event\.key === "Escape"[\s\S]*setOpen\(false\)/)
+    expect(panel).toMatch(/previousFocus\?\.focus\(\)/)
+  })
 })
