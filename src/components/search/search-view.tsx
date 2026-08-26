@@ -1,7 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, useId } from "react"
 import { Search, FileText, ImageIcon, X, ArrowUpRight } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { readFile } from "@/commands/fs"
 import { createSearchSession, tokenizeQuery, type SearchResult, type ImageRef } from "@/lib/search"
 import { useTranslation } from "react-i18next"
 import { normalizePath } from "@/lib/path-utils"
@@ -180,28 +179,29 @@ export function SearchView() {
    * open the wiki page so SOMETHING happens.
    */
   async function handleJumpFromLightbox(hit: ImageHit) {
-    const projectPath = project?.path
-    let openPath = hit.sourcePath
-    let scrollTarget = hit.url
-
-    if (projectPath) {
-      const pp = normalizePath(projectPath)
-      const rawPath = await findRawSourceForImage(hit.url, pp)
-      if (rawPath) {
-        console.log(`[search:jump] ${hit.url} → raw source ${rawPath}`)
-        openPath = rawPath
-        scrollTarget = imageUrlToAbsolute(scrollTarget, pp)
-      } else {
-        console.warn(
-          `[search:jump] no raw source found for image ${hit.url} — falling back to wiki page`,
-        )
-      }
-    }
-
     try {
-      const content = await readFile(openPath)
-      setPendingScrollImageSrc(scrollTarget)
-      openFileInPreview(openPath, content)
+      const projectPath = project?.path
+      const outcome = await navigationSessionRef.current.jump(async () => {
+        let path = hit.sourcePath
+        let scrollTarget = hit.url
+        if (projectPath) {
+          const pp = normalizePath(projectPath)
+          const rawPath = await findRawSourceForImage(hit.url, pp)
+          if (rawPath) {
+            console.log(`[search:jump] ${hit.url} → raw source ${rawPath}`)
+            path = rawPath
+            scrollTarget = imageUrlToAbsolute(scrollTarget, pp)
+          } else {
+            console.warn(
+              `[search:jump] no raw source found for image ${hit.url} — falling back to wiki page`,
+            )
+          }
+        }
+        return { path, scrollTarget }
+      })
+      if (outcome.status === "stale") return
+      setPendingScrollImageSrc(outcome.target.scrollTarget)
+      openFileInPreview(outcome.target.path, outcome.content)
       setLightbox(null)
     } catch (err) {
       console.error("Failed to jump to source:", err)

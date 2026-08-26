@@ -18,4 +18,18 @@ describe("createSearchNavigationSession", () => {
     older.resolve("A")
     await expect(openA).resolves.toMatchObject({ status: "stale" })
   })
+
+  it("stops a stale image jump before reading its resolved source", async () => {
+    const target = createDeferred<{ path: string; scrollTarget: string }>()
+    const read = vi.fn().mockResolvedValue("old source")
+    const session = createSearchNavigationSession(read)
+
+    const jump = session.jump(() => target.promise)
+    await flushMicrotasks()
+    session.invalidate()
+    target.resolve({ path: "/project/raw/sources/a.pdf", scrollTarget: "image-a" })
+
+    await expect(jump).resolves.toMatchObject({ status: "stale" })
+    expect(read).not.toHaveBeenCalled()
+  })
 })
