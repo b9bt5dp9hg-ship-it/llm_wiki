@@ -52,6 +52,7 @@ let customLlmPresetWrite = Promise.resolve()
 let recentProjectsWrite = Promise.resolve()
 let projectOutputLanguageWrite = Promise.resolve()
 let projectFileSyncWrite = Promise.resolve()
+let sourceWatchConfigWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   const store = await getStore()
@@ -468,14 +469,18 @@ export async function loadProjectFileSyncEnabled(projectId?: string): Promise<bo
 }
 
 export async function saveSourceWatchConfig(config: SourceWatchConfig, projectId?: string): Promise<void> {
-  const store = await getStore()
-  const normalized = normalizeSourceWatchConfig(config)
-  const existing = (await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
-  await store.set(SOURCE_WATCH_CONFIG_KEY, {
-    ...existing,
-    [projectId ?? "default"]: normalized,
+  const write = sourceWatchConfigWrite.then(async () => {
+    const store = await getStore()
+    const normalized = normalizeSourceWatchConfig(config)
+    const existing = (await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
+    await store.set(SOURCE_WATCH_CONFIG_KEY, {
+      ...existing,
+      [projectId ?? "default"]: normalized,
+    })
+    await store.save()
   })
-  await store.save()
+  sourceWatchConfigWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadSourceWatchConfig(projectId?: string): Promise<SourceWatchConfig> {

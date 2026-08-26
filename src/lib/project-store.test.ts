@@ -8,6 +8,7 @@ const { memory, save, getHooks } = vi.hoisted(() => {
     afterRecentSnapshot: undefined as undefined | (() => Promise<void>),
     afterOutputLanguageSnapshot: undefined as undefined | (() => Promise<void>),
     afterFileSyncSnapshot: undefined as undefined | (() => Promise<void>),
+    afterSourceWatchSnapshot: undefined as undefined | (() => Promise<void>),
   }
   return { memory, save, getHooks }
 })
@@ -24,6 +25,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
       }
       if (key === "projectFileSyncEnabled" && getHooks.afterFileSyncSnapshot) {
         await getHooks.afterFileSyncSnapshot()
+      }
+      if (key === "sourceWatchConfig" && getHooks.afterSourceWatchSnapshot) {
+        await getHooks.afterSourceWatchSnapshot()
       }
       return value
     },
@@ -43,10 +47,13 @@ import {
   getRecentProjects,
   loadOutputLanguage,
   loadProjectFileSyncEnabled,
+  loadSourceWatchConfig,
   removeFromRecentProjects,
   saveOutputLanguage,
   saveProjectFileSyncEnabled,
+  saveSourceWatchConfig,
 } from "./project-store"
+import { normalizeSourceWatchConfig } from "./source-watch-config"
 
 const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
 const GONE = { id: "gone-id", name: "Gone", path: "/tmp/gone-wiki" }
@@ -263,5 +270,37 @@ describe("project file-sync write serialization", () => {
 
     await expect(loadProjectFileSyncEnabled("project-a")).resolves.toBe(false)
     await expect(loadProjectFileSyncEnabled("project-b")).resolves.toBe(false)
+  })
+})
+
+describe("project source-watch write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    getHooks.afterSourceWatchSnapshot = undefined
+  })
+
+  it("does not lose another project's watcher config when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterSourceWatchSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+    const disabled = normalizeSourceWatchConfig({ enabled: false })
+
+    const first = saveSourceWatchConfig(disabled, "project-a")
+    await firstGetStarted.promise
+    const second = saveSourceWatchConfig(disabled, "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterSourceWatchSnapshot = undefined
+
+    await expect(loadSourceWatchConfig("project-a")).resolves.toMatchObject({ enabled: false })
+    await expect(loadSourceWatchConfig("project-b")).resolves.toMatchObject({ enabled: false })
   })
 })
