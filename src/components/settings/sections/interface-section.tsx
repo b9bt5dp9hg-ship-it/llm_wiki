@@ -60,13 +60,19 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
 
       <div className="space-y-2">
         <Label>{t("settings.sections.interface.uiLanguage")}</Label>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="flex flex-wrap gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.interface.uiLanguage")}
+        >
           {UI_LANGUAGES.map((l) => {
             const active = draft.uiLanguage === l.value
             return (
               <button
                 key={l.value}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => setDraft("uiLanguage", l.value)}
                 className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
                   active
