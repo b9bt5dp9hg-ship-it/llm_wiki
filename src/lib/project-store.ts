@@ -9,6 +9,13 @@ const STORE_NAME = "app-state.json"
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
+function recentProjectPathKey(path: string): string {
+  const normalized = normalizePath(path).replace(/\/+$/, "") || "/"
+  return /^[A-Za-z]:($|\/)/.test(normalized) || normalized.startsWith("//")
+    ? normalized.toLowerCase()
+    : normalized
+}
+
 async function getStore() {
   return load(STORE_NAME, { autoSave: true, defaults: {} })
 }
@@ -37,7 +44,8 @@ export async function addToRecentProjects(
   const write = recentProjectsWrite.then(async () => {
     const store = await getStore()
     const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-    const filtered = existing.filter((p) => p.path !== project.path)
+    const projectKey = recentProjectPathKey(project.path)
+    const filtered = existing.filter((p) => recentProjectPathKey(p.path) !== projectKey)
     const updated = [project, ...filtered].slice(0, 10)
     await store.set(RECENT_PROJECTS_KEY, updated)
     // Opening a project is also the durable startup pointer update path.
@@ -379,7 +387,8 @@ export async function removeFromRecentProjects(
   const write = recentProjectsWrite.then(async () => {
     const store = await getStore()
     const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-    const updated = existing.filter((p) => p.path !== path)
+    const pathKey = recentProjectPathKey(path)
+    const updated = existing.filter((p) => recentProjectPathKey(p.path) !== pathKey)
     await store.set(RECENT_PROJECTS_KEY, updated)
     // ALSO clear the last-project pointer if it points at the project
     // we just removed. Without this, App.tsx's startup auto-open
@@ -388,7 +397,7 @@ export async function removeFromRecentProjects(
     // making the delete look like it didn't take. Reported by user
     // as "deleted project comes back after restart."
     const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
-    if (last && last.path === path) {
+    if (last && recentProjectPathKey(last.path) === pathKey) {
       await store.delete(LAST_PROJECT_KEY)
     }
     // Force-flush. autoSave is a 100ms debounce — removing a recent

@@ -184,6 +184,13 @@ describe("removeFromRecentProjects durability", () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
+  it("removes the same project through a trailing-slash path spelling", async () => {
+    await removeFromRecentProjects(`${GONE.path}/`)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toBeNull()
+  })
+
   it("does not restore a removed project when two removals overlap on a stale snapshot", async () => {
     const ALSO = { id: "also-id", name: "Also", path: "/tmp/also-wiki" }
     memory.set("recentProjects", [GONE, ALSO, KEEP])
@@ -224,6 +231,15 @@ describe("recent-project addition serialization", () => {
 
     expect(await getRecentProjects()).toEqual([KEEP])
     expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("deduplicates equivalent project paths with trailing separators", async () => {
+    memory.set("recentProjects", [KEEP])
+    const reopened = { ...KEEP, name: "Keep reopened", path: `${KEEP.path}/` }
+
+    await addToRecentProjects(reopened)
+
+    expect(await getRecentProjects()).toEqual([reopened])
   })
 
   it("does not lose a project when two additions overlap", async () => {
