@@ -54,6 +54,7 @@ import {
   loadProjectFileSyncEnabled,
   loadSourceWatchConfig,
   removeFromRecentProjects,
+  saveCustomLlmPresets,
   saveOutputLanguage,
   saveLastProject,
   saveProjectLlmOverride,
@@ -77,6 +78,19 @@ describe("project LLM override durability", () => {
       presetId: null,
       model: "model-a",
     })
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("custom LLM preset durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves custom presets before returning", async () => {
+    await saveCustomLlmPresets([{ id: "custom-one", label: "Gateway" }])
 
     expect(save).toHaveBeenCalledTimes(1)
   })

@@ -100,6 +100,7 @@ export async function saveCustomLlmPresets(presets: CustomLlmPreset[]): Promise<
   const write = customLlmPresetWrite.then(async () => {
     const store = await getStore()
     await store.set(CUSTOM_LLM_PRESETS_KEY, normalized)
+    await store.save()
   })
   customLlmPresetWrite = write.catch(() => {})
   await write
