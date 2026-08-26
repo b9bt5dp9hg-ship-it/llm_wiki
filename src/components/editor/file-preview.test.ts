@@ -15,6 +15,18 @@ describe("PDF preview helpers", () => {
   })
 })
 
+describe("PDF preview accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function PdfPreview")
+  const end = source.indexOf("const MAX_INLINE_PDF_BYTES", start)
+  const preview = source.slice(start, end)
+
+  it("names both icon-only zoom controls", () => {
+    expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomOut"\)\}/)
+    expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomIn"\)\}/)
+  })
+})
+
 describe("parseDelimitedContent", () => {
   it("preserves delimiters, escaped quotes, and newlines inside quoted cells", () => {
     expect(parseDelimitedContent('name,detail\nA,"one,two"\nB,"line 1\nline 2"\nC,"a""b"', ",")).toEqual([
