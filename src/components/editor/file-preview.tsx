@@ -677,7 +677,7 @@ function BinaryPlaceholder({
           {t("preview.openWithSystem")}
         </button>
       </div>
-      {loadError && <p className="max-w-lg text-xs text-destructive">{loadError}</p>}
+      {loadError && <p role="alert" className="max-w-lg text-xs text-destructive">{loadError}</p>}
     </div>
   )
 }

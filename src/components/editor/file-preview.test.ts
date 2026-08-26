@@ -78,3 +78,13 @@ describe("HTML preview accessibility", () => {
     expect(preview).toMatch(/aria-pressed=\{showSource\}/)
   })
 })
+
+describe("binary placeholder accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function BinaryPlaceholder")
+  const preview = source.slice(start)
+
+  it("announces an asynchronous text-decoding failure", () => {
+    expect(preview).toMatch(/loadError && <p role="alert"/)
+  })
+})
