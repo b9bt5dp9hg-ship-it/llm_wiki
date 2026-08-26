@@ -27,11 +27,11 @@ import {
 } from "@/lib/ingest-queue"
 import {
   ignoreFileChangeTask,
-  rescanProjectFiles,
   retryFileChangeTask,
   type FileChangeTask,
 } from "@/commands/file-sync"
 import { inferWikiTypeFromPath, wikiTypeLabel } from "@/lib/wiki-page-types"
+import { rescanProjectFileSync } from "@/lib/project-file-sync"
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   sources: BookOpen,
@@ -196,13 +196,12 @@ export function ActivityPanel() {
 
   const handleFileSyncRescan = useCallback(() => {
     if (!project) return
-    rescanProjectFiles(project.id, normalizePath(project.path), useWikiStore.getState().sourceWatchConfig)
-      .then((result) => {
-        setFileSyncTasks(result.queue.tasks)
+    rescanProjectFileSync(project, useWikiStore.getState().sourceWatchConfig)
+      .then(() => {
         useFileSyncStore.getState().setLastError(null)
       })
       .catch((err) => useFileSyncStore.getState().setLastError(String(err)))
-  }, [project, setFileSyncTasks])
+  }, [project])
 
   const handleFileSyncRetry = useCallback((taskId: string) => {
     if (!project) return
