@@ -29,6 +29,10 @@ describe("PDF preview accessibility", () => {
   it("exposes whether the text view toggle is active", () => {
     expect(preview).toMatch(/aria-pressed=\{showText\}/)
   })
+
+  it("announces asynchronous PDF rendering failures", () => {
+    expect(preview).toMatch(/loadError \? \(\s*<div role="alert"/)
+  })
 })
 
 describe("parseDelimitedContent", () => {

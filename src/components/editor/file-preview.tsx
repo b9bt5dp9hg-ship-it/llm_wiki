@@ -209,7 +209,7 @@ function PdfPreview({ filePath, content }: { filePath: string; content: string }
       {showText ? <TextPreview filePath={filePath} content={content} label="PDF text" /> : loading ? (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("preview.pdfLoading")}</div>
       ) : loadError ? (
-        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
           <FileQuestion className="h-8 w-8" />
           <p>{t("preview.pdfLoadError")}</p>
           <p className="max-w-xl break-words text-xs opacity-70">{loadError}</p>
