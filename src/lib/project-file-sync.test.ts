@@ -227,6 +227,29 @@ describe("project file sync", () => {
     expect(useFileSyncStore.getState().tasks).toEqual([])
   })
 
+  it("does not apply a refreshed selection after switching projects", async () => {
+    const { refreshAfterFileChanges } = await import("@/lib/project-file-sync")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    useWikiStore.getState().setSelectedFile("/tmp/a/wiki/a.md")
+    useWikiStore.getState().setFileContent("A before")
+    mocks.readFile.mockResolvedValue("stale A")
+    mocks.listDirectory.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      useWikiStore.getState().setSelectedFile("/tmp/b/wiki/b.md")
+      useWikiStore.getState().setFileContent("B current")
+      return []
+    })
+
+    await refreshAfterFileChanges(projectA, ["wiki/a.md"])
+
+    expect(mocks.readFile).not.toHaveBeenCalled()
+    expect(useWikiStore.getState().selectedFile).toBe("/tmp/b/wiki/b.md")
+    expect(useWikiStore.getState().fileContent).toBe("B current")
+  })
+
   it("does not apply a stale start result after the active project changes", async () => {
     const { startProjectFileSync, stopProjectFileSync } = await import("@/lib/project-file-sync")
     const { useWikiStore } = await import("@/stores/wiki-store")

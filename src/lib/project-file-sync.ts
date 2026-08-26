@@ -252,14 +252,15 @@ async function migrateUnchangedSourceMoves(
   return moved
 }
 
-async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
+export async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
   const pp = normalizePath(project.path)
-  const store = useWikiStore.getState()
   await refreshProjectFileTree(pp, {
     projectId: project.id,
     bumpDataVersion: true,
   })
 
+  const store = useWikiStore.getState()
+  if (store.project?.id !== project.id || normalizePath(store.project.path) !== pp) return
   const selected = store.selectedFile ? normalizePath(store.selectedFile) : null
   if (!selected) return
 
@@ -268,10 +269,16 @@ async function refreshAfterFileChanges(project: WikiProject, relativePaths: stri
 
   try {
     const content = await readFile(selected)
-    useWikiStore.getState().setFileContent(content)
+    const current = useWikiStore.getState()
+    if (current.project?.id !== project.id) return
+    if (normalizePath(current.selectedFile ?? "") !== selected) return
+    current.setFileContent(content)
   } catch {
-    useWikiStore.getState().setSelectedFile(null)
-    useWikiStore.getState().setFileContent("")
+    const current = useWikiStore.getState()
+    if (current.project?.id !== project.id) return
+    if (normalizePath(current.selectedFile ?? "") !== selected) return
+    current.setSelectedFile(null)
+    current.setFileContent("")
   }
 }
 
