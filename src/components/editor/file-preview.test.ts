@@ -38,4 +38,12 @@ describe("fullscreen image preview semantics", () => {
     expect(preview).toMatch(/aria-label=\{fileName\}/)
     expect(preview.match(/aria-label=/g)).toHaveLength(4)
   })
+
+  it("owns focus, traps Tab, closes on Escape, and restores focus", () => {
+    expect(preview).toMatch(/document\.activeElement/)
+    expect(preview).toMatch(/imageDialogRef\.current\?\.querySelector<HTMLElement>[\s\S]*\.focus\(\)/)
+    expect(preview).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(preview).toMatch(/event\.key === "Escape"[\s\S]*setExpanded\(false\)/)
+    expect(preview).toMatch(/previousFocus\?\.focus\(\)/)
+  })
 })
