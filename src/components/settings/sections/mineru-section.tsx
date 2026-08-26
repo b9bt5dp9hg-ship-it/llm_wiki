@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -18,9 +18,25 @@ export function MineruSection({ draft, setDraft }: Props) {
   const { t } = useTranslation()
   const [testState, setTestState] = useState<TestState>("idle")
   const [testError, setTestError] = useState("")
+  const mineruTestRequest = useRef(0)
+  const mineruTestConfigKey = JSON.stringify([
+    draft.mineruBackend,
+    draft.mineruToken.trim(),
+    draft.mineruLocalEndpoint.trim(),
+    draft.mineruLocalToken.trim(),
+  ])
+  const currentMineruTestConfigKey = useRef(mineruTestConfigKey)
+  currentMineruTestConfigKey.current = mineruTestConfigKey
+
+  const isCurrentMineruTest = (requestId: number, testedConfigKey: string) => (
+    requestId === mineruTestRequest.current
+    && testedConfigKey === currentMineruTestConfigKey.current
+  )
 
   const handleTest = async () => {
     if (draft.mineruBackend === "cloud" && !draft.mineruToken.trim()) return
+    const testedConfigKey = mineruTestConfigKey
+    const requestId = ++mineruTestRequest.current
     setTestState("running")
     setTestError("")
     try {
@@ -29,8 +45,10 @@ export function MineruSection({ draft, setDraft }: Props) {
         localEndpoint: draft.mineruLocalEndpoint,
         localToken: draft.mineruLocalToken.trim(),
       })
+      if (!isCurrentMineruTest(requestId, testedConfigKey)) return
       setTestState("success")
     } catch (err) {
+      if (!isCurrentMineruTest(requestId, testedConfigKey)) return
       setTestState("failed")
       setTestError(err instanceof Error ? err.message : String(err))
     }
