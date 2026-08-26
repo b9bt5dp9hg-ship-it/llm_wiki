@@ -451,6 +451,7 @@ export async function saveOutputLanguage(lang: OutputLanguage, projectId?: strin
       await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
     }
     await store.set(OUTPUT_LANGUAGE_KEY, lang)
+    await store.save()
   })
   projectOutputLanguageWrite = write.catch(() => {})
   await write

@@ -299,7 +299,14 @@ describe("recent-project addition serialization", () => {
 describe("project output-language write serialization", () => {
   beforeEach(() => {
     memory.clear()
+    save.mockClear()
     getHooks.afterOutputLanguageSnapshot = undefined
+  })
+
+  it("force-saves the selected language before returning", async () => {
+    await saveOutputLanguage("German", "project-a")
+
+    expect(save).toHaveBeenCalledTimes(1)
   })
 
   it("does not lose another project's language when two saves overlap", async () => {
