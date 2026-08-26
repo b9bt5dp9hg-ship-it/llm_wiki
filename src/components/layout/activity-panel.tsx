@@ -282,7 +282,7 @@ export function ActivityPanel() {
         ) : (
           <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
         )}
-        <span className="flex-1 truncate text-left">{statusText}</span>
+        <span aria-live="polite" className="flex-1 truncate text-left">{statusText}</span>
         {expanded ? (
           <ChevronDown className="h-3 w-3 shrink-0" />
         ) : (

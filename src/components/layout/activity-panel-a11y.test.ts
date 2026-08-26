@@ -42,4 +42,8 @@ describe("activity panel accessibility", () => {
     expect(source).toMatch(/aria-valuemax=\{queueSummary\.total\}/)
     expect(source).toMatch(/aria-valuenow=\{queueSummary\.completed \+ queueSummary\.failed \+ queueSummary\.cancelled\}/)
   })
+
+  it("announces asynchronous activity status changes", () => {
+    expect(source).toMatch(/<span aria-live="polite" className="flex-1 truncate text-left">\{statusText\}<\/span>/)
+  })
 })
