@@ -56,6 +56,7 @@ import {
   removeFromRecentProjects,
   saveOutputLanguage,
   saveLastProject,
+  saveProjectLlmOverride,
   saveProjectFileSyncEnabled,
   saveSourceWatchConfig,
 } from "./project-store"
@@ -63,6 +64,23 @@ import { normalizeSourceWatchConfig } from "./source-watch-config"
 
 const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
 const GONE = { id: "gone-id", name: "Gone", path: "/tmp/gone-wiki" }
+
+describe("project LLM override durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves a project model override before returning", async () => {
+    await saveProjectLlmOverride("project-a", {
+      enabled: true,
+      presetId: null,
+      model: "model-a",
+    })
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe("project-store MinerU config normalization", () => {
   it("preserves valid MinerU config values", () => {

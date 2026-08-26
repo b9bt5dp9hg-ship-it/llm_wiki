@@ -163,6 +163,7 @@ export async function saveProjectLlmOverride(
     const store = await getStore()
     const existing = (await store.get<Record<string, ProjectLlmOverride>>(PROJECT_LLM_OVERRIDES_KEY)) ?? {}
     await store.set(PROJECT_LLM_OVERRIDES_KEY, { ...existing, [projectId]: config })
+    await store.save()
   })
   projectLlmOverrideWrite = write.catch(() => {})
   await write
