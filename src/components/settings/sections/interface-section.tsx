@@ -92,13 +92,19 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
 
       <div className="space-y-2">
         <Label>{t("settings.sections.interface.theme")}</Label>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="flex flex-wrap gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.interface.theme")}
+        >
           {THEMES.map((th) => {
             const active = draft.theme === th.value
             return (
               <button
                 key={th.value}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => {
                   setDraft("theme", th.value)
                   onThemeChange?.(th.value)
