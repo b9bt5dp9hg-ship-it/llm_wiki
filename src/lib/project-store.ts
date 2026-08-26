@@ -421,6 +421,7 @@ const LANGUAGE_KEY = "language"
 export async function saveLanguage(lang: string): Promise<void> {
   const store = await getStore()
   await store.set(LANGUAGE_KEY, lang)
+  await store.save()
 }
 
 export async function loadLanguage(): Promise<string | null> {

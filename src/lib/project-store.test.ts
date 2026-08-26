@@ -55,6 +55,7 @@ import {
   loadSourceWatchConfig,
   removeFromRecentProjects,
   saveCustomLlmPresets,
+  saveLanguage,
   saveOutputLanguage,
   saveLastProject,
   saveProjectLlmOverride,
@@ -109,6 +110,19 @@ describe("update-check state durability", () => {
       lastCheckedAt: 123,
       dismissedVersion: "1.2.3",
     })
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("interface language durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves the interface language before returning", async () => {
+    await saveLanguage("de")
 
     expect(save).toHaveBeenCalledTimes(1)
   })
