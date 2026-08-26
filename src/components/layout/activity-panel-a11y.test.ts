@@ -11,4 +11,14 @@ describe("activity panel accessibility", () => {
     expect(trigger).toMatch(/type="button"/)
     expect(trigger).toMatch(/aria-expanded=\{expanded\}/)
   })
+
+  it("names every icon-only queue-row action", () => {
+    const start = source.indexOf("function QueueRow")
+    const end = source.indexOf("function FileSyncRow", start)
+    const row = source.slice(start, end)
+    expect(row).toMatch(/aria-label=\{t\("common\.retry"\)\}/)
+    expect(row).toMatch(/aria-label=\{t\("activity\.moveUp"\)\}/)
+    expect(row).toMatch(/aria-label=\{t\("activity\.moveDown"\)\}/)
+    expect(row).toMatch(/aria-label=\{t\("common\.cancel"\)\}/)
+  })
 })

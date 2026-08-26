@@ -510,6 +510,8 @@ function QueueRow({ task, selected, onSelect, onRetry, onCancel, onMove }: {
         <div className="flex items-center gap-1 shrink-0">
           {(task.status === "failed" || task.status === "cancelled") && (
             <button
+              type="button"
+              aria-label={t("common.retry")}
               onClick={() => onRetry(task.id)}
               className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               title={t("common.retry")}
@@ -519,16 +521,18 @@ function QueueRow({ task, selected, onSelect, onRetry, onCancel, onMove }: {
           )}
           {task.status === "pending" && (
             <>
-              <button onClick={() => onMove(task.id, "up")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveUp")}>
+              <button type="button" aria-label={t("activity.moveUp")} onClick={() => onMove(task.id, "up")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveUp")}>
                 <ArrowUp className="h-3 w-3" />
               </button>
-              <button onClick={() => onMove(task.id, "down")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveDown")}>
+              <button type="button" aria-label={t("activity.moveDown")} onClick={() => onMove(task.id, "down")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveDown")}>
                 <ArrowDown className="h-3 w-3" />
               </button>
             </>
           )}
           {(task.status === "pending" || task.status === "processing") && (
             <button
+              type="button"
+              aria-label={t("common.cancel")}
               onClick={() => onCancel(task.id)}
               className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
               title={t("common.cancel")}
