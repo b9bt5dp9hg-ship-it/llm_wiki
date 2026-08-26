@@ -61,6 +61,7 @@ import {
   saveProjectLlmOverride,
   saveProjectFileSyncEnabled,
   saveSourceWatchConfig,
+  saveTheme,
   saveUpdateCheckState,
 } from "./project-store"
 import { normalizeSourceWatchConfig } from "./source-watch-config"
@@ -123,6 +124,19 @@ describe("interface language durability", () => {
 
   it("force-saves the interface language before returning", async () => {
     await saveLanguage("de")
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("theme durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves the theme before returning", async () => {
+    await saveTheme("dark")
 
     expect(save).toHaveBeenCalledTimes(1)
   })

@@ -434,6 +434,7 @@ const THEME_KEY = "theme"
 export async function saveTheme(theme: "light" | "dark" | "system"): Promise<void> {
   const store = await getStore()
   await store.set(THEME_KEY, theme)
+  await store.save()
 }
 
 export async function loadTheme(): Promise<"light" | "dark" | "system" | null> {
