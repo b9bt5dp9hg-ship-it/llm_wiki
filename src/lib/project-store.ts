@@ -540,6 +540,7 @@ export async function saveUpdateCheckState(
 ): Promise<void> {
   const store = await getStore()
   await store.set(UPDATE_CHECK_STATE_KEY, state)
+  await store.save()
 }
 
 export async function loadUpdateCheckState(): Promise<PersistedUpdateCheckState | null> {

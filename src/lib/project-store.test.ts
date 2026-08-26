@@ -60,6 +60,7 @@ import {
   saveProjectLlmOverride,
   saveProjectFileSyncEnabled,
   saveSourceWatchConfig,
+  saveUpdateCheckState,
 } from "./project-store"
 import { normalizeSourceWatchConfig } from "./source-watch-config"
 
@@ -91,6 +92,23 @@ describe("custom LLM preset durability", () => {
 
   it("force-saves custom presets before returning", async () => {
     await saveCustomLlmPresets([{ id: "custom-one", label: "Gateway" }])
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("update-check state durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves update-check state before returning", async () => {
+    await saveUpdateCheckState({
+      enabled: true,
+      lastCheckedAt: 123,
+      dismissedVersion: "1.2.3",
+    })
 
     expect(save).toHaveBeenCalledTimes(1)
   })
