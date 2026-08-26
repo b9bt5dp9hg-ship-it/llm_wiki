@@ -63,3 +63,14 @@ describe("fullscreen image preview semantics", () => {
     expect(preview).toMatch(/previousFocus\?\.focus\(\)/)
   })
 })
+
+describe("HTML preview accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function HtmlPreview")
+  const end = source.indexOf("function ImagePreview", start)
+  const preview = source.slice(start, end)
+
+  it("exposes whether source mode is active", () => {
+    expect(preview).toMatch(/aria-pressed=\{showSource\}/)
+  })
+})

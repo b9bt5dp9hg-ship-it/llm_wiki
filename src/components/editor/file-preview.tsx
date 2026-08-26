@@ -280,6 +280,7 @@ function HtmlPreview({
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase">HTML</span>
         <button
           type="button"
+          aria-pressed={showSource}
           onClick={() => setShowSource((current) => !current)}
           className="rounded p-1 hover:bg-accent hover:text-foreground"
           title={showSource ? t("preview.showRendered") : t("preview.showSource")}
