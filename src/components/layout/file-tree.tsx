@@ -56,7 +56,7 @@ function TreeNode({
           <Folder className="h-3.5 w-3.5 shrink-0 text-blue-400" />
           <span className="truncate">{node.name}</span>
           {loadingChildren && (
-            <span className="ml-auto pr-2 text-[10px] text-muted-foreground">
+            <span role="status" className="ml-auto pr-2 text-[10px] text-muted-foreground">
               {t("common.loading", { defaultValue: "Loading..." })}
             </span>
           )}

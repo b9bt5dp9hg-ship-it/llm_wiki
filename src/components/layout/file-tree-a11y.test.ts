@@ -15,4 +15,8 @@ describe("file tree accessibility", () => {
   it("exposes the currently previewed file", () => {
     expect(source).toMatch(/aria-current=\{isSelected \? "page" : undefined\}/)
   })
+
+  it("announces lazy folder loading", () => {
+    expect(source).toMatch(/<span role="status" className="ml-auto pr-2 text-\[10px\] text-muted-foreground">/)
+  })
 })
