@@ -11,4 +11,8 @@ describe("file tree accessibility", () => {
     expect(treeNode).toMatch(/aria-expanded=\{expanded\}/)
     expect(treeNode).toMatch(/type="button"/)
   })
+
+  it("exposes the currently previewed file", () => {
+    expect(source).toMatch(/aria-current=\{isSelected \? "page" : undefined\}/)
+  })
 })

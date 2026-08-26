@@ -75,6 +75,8 @@ function TreeNode({
 
   return (
     <button
+      type="button"
+      aria-current={isSelected ? "page" : undefined}
       onClick={() => openPathInPreview(node.path)}
       className={`flex w-full items-center gap-1 py-1 text-sm ${
         isSelected
