@@ -109,6 +109,7 @@ export function AgentFileActivity({
                         onClick={() => setExpandedEdits((current) => ({ ...current, [change.id]: !editExpanded }))}
                         className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                         aria-expanded={editExpanded}
+                        aria-label={editExpanded ? t("chat.agentChanges.collapseDiff") : t("chat.agentChanges.expandDiff")}
                       >
                         {editExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                       </button>
