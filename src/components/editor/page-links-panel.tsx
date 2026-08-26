@@ -22,7 +22,12 @@ export function PageLinksPanel({ filePath, onClose }: { filePath: string; onClos
   const [creatingTitle, setCreatingTitle] = useState("")
   const draftAbortRef = useRef<AbortController | null>(null)
 
-  useEffect(() => () => draftAbortRef.current?.abort(), [])
+  useEffect(() => {
+    draftAbortRef.current?.abort()
+    draftAbortRef.current = null
+    setCreatingTitle("")
+    return () => draftAbortRef.current?.abort()
+  }, [filePath, project?.id])
 
   useEffect(() => {
     if (!project) return
