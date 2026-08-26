@@ -149,6 +149,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
             <button
               type="button"
               onClick={() => setExpanded(true)}
+              aria-label={t("mermaid.enlarge")}
               className="absolute top-2 right-2 z-10 rounded-md bg-background/80 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/diagram:opacity-100"
               title={t("mermaid.enlarge")}
             >
@@ -178,12 +179,16 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           onClick={() => { setExpanded(false); setScale(1) }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("mermaid.diagram")}
             className="relative h-[90vh] w-[90vw] overflow-auto rounded-lg bg-background border border-border shadow-2xl p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
               <button
                 type="button"
+                aria-label={t("settings.sections.interface.zoomIn")}
                 onClick={() => setScale((s) => Math.min(s + 0.3, 5))}
                 className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >
@@ -192,6 +197,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               <span className="text-xs text-muted-foreground tabular-nums min-w-[3rem] text-center">{Math.round(scale * 100)}%</span>
               <button
                 type="button"
+                aria-label={t("settings.sections.interface.zoomOut")}
                 onClick={() => setScale((s) => Math.max(s - 0.3, 0.3))}
                 className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >
@@ -199,6 +205,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               </button>
               <button
                 type="button"
+                aria-label={t("common.close")}
                 onClick={() => { setExpanded(false); setScale(1) }}
                 className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >
