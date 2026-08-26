@@ -41,6 +41,14 @@ describe("filterSourceTreeByQuery", () => {
   })
 })
 
+describe("source delete accessibility", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("names both armed and idle delete controls with their contextual hint", () => {
+    expect(source.match(/aria-label=\{hint\}/g)).toHaveLength(2)
+  })
+})
+
 describe("source preview request ordering", () => {
   const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
 

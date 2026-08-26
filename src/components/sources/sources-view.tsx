@@ -841,6 +841,7 @@ function DeleteButton({
         size="sm"
         className="h-7 shrink-0 px-2 text-[11px] font-semibold animate-pulse"
         title={hint}
+        aria-label={hint}
         onClick={onClick}
       >
         <Trash2 className="mr-1 h-3.5 w-3.5" />
@@ -854,6 +855,7 @@ function DeleteButton({
       size="icon"
       className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
       title={hint}
+      aria-label={hint}
       onClick={onClick}
     >
       <Trash2 className="h-3.5 w-3.5" />
