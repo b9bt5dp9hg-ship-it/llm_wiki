@@ -36,4 +36,11 @@ describe("fullscreen Mermaid semantics", () => {
     expect(source.match(/aria-label=\{t\("settings\.sections\.interface\.zoom(In|Out)"\)\}/g)).toHaveLength(2)
     expect(source).toMatch(/aria-label=\{t\("common\.close"\)\}/)
   })
+
+  it("lets keyboard users enlarge the inline diagram and reveal its control", () => {
+    expect(source).toMatch(/role="button"/)
+    expect(source).toMatch(/tabIndex=\{0\}/)
+    expect(source).toMatch(/event\.key === "Enter" \|\| event\.key === " "/)
+    expect(source).toMatch(/group-focus-within\/diagram:opacity-100/)
+  })
 })

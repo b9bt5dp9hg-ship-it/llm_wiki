@@ -150,14 +150,23 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               type="button"
               onClick={() => setExpanded(true)}
               aria-label={t("mermaid.enlarge")}
-              className="absolute top-2 right-2 z-10 rounded-md bg-background/80 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/diagram:opacity-100"
+              className="absolute top-2 right-2 z-10 rounded-md bg-background/80 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/diagram:opacity-100 group-focus-within/diagram:opacity-100 focus-visible:opacity-100"
               title={t("mermaid.enlarge")}
             >
               <ZoomIn className="h-4 w-4" />
             </button>
             <div
+              role="button"
+              tabIndex={0}
+              aria-label={t("mermaid.enlarge")}
               className="cursor-zoom-in p-3"
               onClick={() => setExpanded(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  setExpanded(true)
+                }
+              }}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </>
