@@ -25,12 +25,13 @@ import {
   resumeProcessing,
   type IngestTask,
 } from "@/lib/ingest-queue"
-import {
-  ignoreFileChangeTask,
-  type FileChangeTask,
-} from "@/commands/file-sync"
+import { type FileChangeTask } from "@/commands/file-sync"
 import { inferWikiTypeFromPath, wikiTypeLabel } from "@/lib/wiki-page-types"
-import { rescanProjectFileSync, retryProjectFileChangeTask } from "@/lib/project-file-sync"
+import {
+  ignoreProjectFileChangeTask,
+  rescanProjectFileSync,
+  retryProjectFileChangeTask,
+} from "@/lib/project-file-sync"
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   sources: BookOpen,
@@ -83,7 +84,6 @@ export function ActivityPanel() {
   const clearDone = useActivityStore((s) => s.clearDone)
   const project = useWikiStore((s) => s.project)
   const fileSyncTasks = useFileSyncStore((s) => s.tasks)
-  const setFileSyncTasks = useFileSyncStore((s) => s.setTasks)
   const fileSyncError = useFileSyncStore((s) => s.lastError)
   const [expanded, setExpanded] = useState(false)
   const [queueTasks, setQueueTasks] = useState<IngestTask[]>(() => [...getQueue()])
@@ -213,13 +213,12 @@ export function ActivityPanel() {
 
   const handleFileSyncIgnore = useCallback((taskId: string) => {
     if (!project) return
-    ignoreFileChangeTask(project.id, normalizePath(project.path), taskId)
-      .then((queue) => {
-        setFileSyncTasks(queue.tasks)
+    ignoreProjectFileChangeTask(project, taskId)
+      .then(() => {
         useFileSyncStore.getState().setLastError(null)
       })
       .catch((err) => useFileSyncStore.getState().setLastError(String(err)))
-  }, [project, setFileSyncTasks])
+  }, [project])
 
   // Auto-expand when a new task starts running
   useEffect(() => {

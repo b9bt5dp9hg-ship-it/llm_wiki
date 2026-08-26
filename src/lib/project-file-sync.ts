@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { readFile } from "@/commands/fs"
 import {
+  ignoreFileChangeTask,
   rescanProjectFiles,
   retryFileChangeTask,
   startProjectFileWatcher,
@@ -134,6 +135,16 @@ export async function retryProjectFileChangeTask(
 ): Promise<void> {
   if (useWikiStore.getState().project?.id !== project.id) return
   const queue = await retryFileChangeTask(project.id, normalizePath(project.path), taskId)
+  if (useWikiStore.getState().project?.id !== project.id) return
+  useFileSyncStore.getState().setTasks(queue.tasks)
+}
+
+export async function ignoreProjectFileChangeTask(
+  project: WikiProject,
+  taskId: string,
+): Promise<void> {
+  if (useWikiStore.getState().project?.id !== project.id) return
+  const queue = await ignoreFileChangeTask(project.id, normalizePath(project.path), taskId)
   if (useWikiStore.getState().project?.id !== project.id) return
   useFileSyncStore.getState().setTasks(queue.tasks)
 }

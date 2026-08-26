@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     emit: (event: string, payload: unknown) => listeners[event]?.({ payload }),
     stopProjectFileWatcher: vi.fn(async () => undefined),
     retryFileChangeTask: vi.fn(async (): Promise<import("@/commands/file-sync").FileChangeQueue> => ({ version: 1, tasks: [] })),
+    ignoreFileChangeTask: vi.fn(async (): Promise<import("@/commands/file-sync").FileChangeQueue> => ({ version: 1, tasks: [] })),
     rescanProjectFiles: vi.fn(async (projectId: string): Promise<{
       queue: {
         version: number
@@ -102,6 +103,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@/commands/file-sync", () => ({
   rescanProjectFiles: mocks.rescanProjectFiles,
   retryFileChangeTask: mocks.retryFileChangeTask,
+  ignoreFileChangeTask: mocks.ignoreFileChangeTask,
   startProjectFileWatcher: mocks.startProjectFileWatcher,
   stopProjectFileWatcher: mocks.stopProjectFileWatcher,
 }))
@@ -204,6 +206,23 @@ describe("project file sync", () => {
     })
 
     await retryProjectFileChangeTask(projectA, "stale")
+
+    expect(useFileSyncStore.getState().tasks).toEqual([])
+  })
+
+  it("does not publish an ignored file-change queue after switching projects", async () => {
+    const { ignoreProjectFileChangeTask } = await import("@/lib/project-file-sync")
+    const { useFileSyncStore } = await import("@/stores/file-sync-store")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    mocks.ignoreFileChangeTask.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      return { version: 1, tasks: [] }
+    })
+
+    await ignoreProjectFileChangeTask(projectA, "stale")
 
     expect(useFileSyncStore.getState().tasks).toEqual([])
   })
