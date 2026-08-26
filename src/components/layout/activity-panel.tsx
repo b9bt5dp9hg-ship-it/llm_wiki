@@ -569,6 +569,8 @@ function FileSyncRow({ task, onRetry, onIgnore }: { task: FileChangeTask; onRetr
         {task.status === "failed" && (
           <div className="flex shrink-0 items-center gap-1">
             <button
+              type="button"
+              aria-label={t("common.retry")}
               onClick={() => onRetry(task.id)}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               title={t("common.retry")}
@@ -576,6 +578,8 @@ function FileSyncRow({ task, onRetry, onIgnore }: { task: FileChangeTask; onRetr
               <RotateCcw className="h-3 w-3" />
             </button>
             <button
+              type="button"
+              aria-label={t("common.ignore")}
               onClick={() => onIgnore(task.id)}
               className="rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
               title={t("common.ignore")}

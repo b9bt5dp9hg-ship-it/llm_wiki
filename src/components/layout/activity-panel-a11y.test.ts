@@ -21,4 +21,12 @@ describe("activity panel accessibility", () => {
     expect(row).toMatch(/aria-label=\{t\("activity\.moveDown"\)\}/)
     expect(row).toMatch(/aria-label=\{t\("common\.cancel"\)\}/)
   })
+
+  it("names both icon-only file-sync actions", () => {
+    const start = source.indexOf("function FileSyncRow")
+    const end = source.indexOf("function ActivityRow", start)
+    const row = source.slice(start, end)
+    expect(row).toMatch(/aria-label=\{t\("common\.retry"\)\}/)
+    expect(row).toMatch(/aria-label=\{t\("common\.ignore"\)\}/)
+  })
 })
