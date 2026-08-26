@@ -13,4 +13,8 @@ describe("ResearchPanel accessibility", () => {
   it("exposes each research task's expanded state", () => {
     expect(panel).toMatch(/<button\s+type="button"\s+aria-expanded=\{expanded\}\s+onClick=\{\(\) => setExpanded\(!expanded\)\}/)
   })
+
+  it("exposes the synthesis thinking disclosure state", () => {
+    expect(panel).toMatch(/<button\s+type="button"\s+aria-expanded=\{!thinkingCollapsed\}\s+onClick=\{\(\) => setThinkingCollapsed/)
+  })
 })

@@ -185,6 +185,8 @@ function SynthesisBlock({ synthesis, isStreaming }: { synthesis: string; isStrea
         {thinking && (
           <div className="mb-2">
             <button
+              type="button"
+              aria-expanded={!thinkingCollapsed}
               onClick={() => setThinkingCollapsed((v) => !v)}
               className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
             >
