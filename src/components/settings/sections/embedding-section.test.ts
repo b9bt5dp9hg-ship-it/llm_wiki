@@ -36,6 +36,16 @@ describe("EmbeddingSection reindex config", () => {
   })
 })
 
+describe("EmbeddingSection accessibility", () => {
+  const section = source("embedding-section.tsx")
+
+  it("exposes the enabled state and name of the embedding toggle", () => {
+    expect(section).toMatch(/role="switch"/)
+    expect(section).toMatch(/aria-checked=\{draft\.embeddingEnabled\}/)
+    expect(section).toMatch(/aria-label=\{t\("settings\.sections\.embedding\.enableLabel"\)\}/)
+  })
+})
+
 describe("embeddingConfigFromDraft", () => {
   it("maps the unsaved settings draft rather than a persisted store snapshot", () => {
     const draft = {

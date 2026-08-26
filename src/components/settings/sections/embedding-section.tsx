@@ -210,6 +210,9 @@ export function EmbeddingSection({ draft, setDraft }: Props) {
         </div>
         <button
           type="button"
+          role="switch"
+          aria-checked={draft.embeddingEnabled}
+          aria-label={t("settings.sections.embedding.enableLabel")}
           onClick={() => setDraft("embeddingEnabled", !draft.embeddingEnabled)}
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
             draft.embeddingEnabled ? "bg-primary" : "bg-muted"
