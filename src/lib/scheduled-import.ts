@@ -1,5 +1,6 @@
 import {
   copyFile,
+  deleteFile,
   fileExists,
   getFileMd5,
   getFileSize,
@@ -448,6 +449,7 @@ export async function scanAndImport(
   if (scanning) return
 
   scanning = true
+  const copiedDests: string[] = []
 
   try {
     if (!isCurrentRun(project.id, options.runId, options.allowInactive)) {
@@ -506,6 +508,10 @@ export async function scanAndImport(
         const destPath = scheduledImportDestinationForFile(projectPath, importRoot, file)
         if (normalizePath(destPath) !== sourcePath) {
           await copyFile(sourcePath, destPath)
+          copiedDests.push(destPath)
+        }
+        if (!isCurrentRun(project.id, options.runId, options.allowInactive)) {
+          return
         }
         changedFiles.push({ key, md5, destPath })
       } catch (err) {
@@ -563,6 +569,7 @@ export async function scanAndImport(
           for (const file of changedFiles) {
             nextDb.files[file.key] = file.md5
           }
+          copiedDests.length = 0
         } else {
           console.warn("[scheduled-import] LLM is not configured; changed files were not marked imported")
         }
@@ -599,7 +606,20 @@ export async function scanAndImport(
   } catch (err) {
     console.error("Scheduled import scan failed:", err)
   } finally {
+    if (copiedDests.length > 0) {
+      await rollbackUntrackedScheduledImportCopies(copiedDests)
+    }
     scanning = false
+  }
+}
+
+async function rollbackUntrackedScheduledImportCopies(destPaths: string[]): Promise<void> {
+  for (const destPath of destPaths) {
+    try {
+      await deleteFile(destPath)
+    } catch (err) {
+      console.warn(`[scheduled-import] failed to roll back untracked copy ${destPath}:`, err)
+    }
   }
 }
 
@@ -658,6 +678,16 @@ async function runScheduledImportSweep(
 
 export function stopScheduledImport(): void {
   activeRunId += 1
+  if (scanTimer) {
+    clearInterval(scanTimer)
+    scanTimer = null
+  }
+}
+
+/** Test-only — reset run id and scanner lock between cases. */
+export function __resetScheduledImportForTesting(): void {
+  activeRunId = 0
+  scanning = false
   if (scanTimer) {
     clearInterval(scanTimer)
     scanTimer = null
