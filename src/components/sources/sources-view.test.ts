@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import type { FileNode } from "@/types/wiki"
 import { filterSourceTreeByQuery } from "./sources-view"
@@ -37,5 +38,21 @@ describe("filterSourceTreeByQuery", () => {
 
   it("returns an empty tree when no source matches", () => {
     expect(filterSourceTreeByQuery(TREE, "missing source")).toEqual([])
+  })
+})
+
+describe("source preview request ordering", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("discards a slow source read after a newer selection", () => {
+    const start = source.indexOf("async function handleOpenSource")
+    const end = source.indexOf("async function handleOpenSourceExternally", start)
+    const handler = source.slice(start, end)
+    expect(handler).toMatch(/const requestId = \+\+sourceOpenRequest\.current/)
+    expect(handler).toMatch(/await readFile\(node\.path\)[\s\S]*requestId !== sourceOpenRequest\.current/)
+  })
+
+  it("invalidates pending reads on project changes", () => {
+    expect(source).toMatch(/sourceOpenRequest\.current\+\+[\s\S]*setSourceQuery\(""\)[\s\S]*\[project\?\.id\]/)
   })
 })

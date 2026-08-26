@@ -54,6 +54,7 @@ export function SourcesView() {
   const [ingestedIdentities, setIngestedIdentities] = useState<string[]>([])
   const [queueSnapshot, setQueueSnapshot] = useState<IngestTask[]>(() => [...getQueue()])
   const [sourceQuery, setSourceQuery] = useState("")
+  const sourceOpenRequest = useRef(0)
   /**
    * Path of the source-tree node currently in "click again to
    * confirm delete" state. Lifted up here (rather than living
@@ -95,6 +96,7 @@ export function SourcesView() {
   }, [loadSources, dataVersion])
 
   useEffect(() => {
+    sourceOpenRequest.current++
     setSourceQuery("")
   }, [project?.id])
 
@@ -256,10 +258,13 @@ export function SourcesView() {
   }
 
   async function handleOpenSource(node: FileNode) {
+    const requestId = ++sourceOpenRequest.current
     try {
       const content = await readFile(node.path)
+      if (requestId !== sourceOpenRequest.current) return
       openFileInPreview(node.path, content)
     } catch (err) {
+      if (requestId !== sourceOpenRequest.current) return
       console.error("Failed to read source:", err)
     }
   }
