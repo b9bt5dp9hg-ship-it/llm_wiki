@@ -1651,13 +1651,20 @@ export function GraphView() {
       {/* Research Topic Confirmation Dialog */}
       {researchDialog && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-[480px] rounded-lg border bg-background shadow-xl">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="graph-research-dialog-title"
+            className="w-[480px] rounded-lg border bg-background shadow-xl"
+          >
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="flex items-center gap-2">
                 <Search className="h-4 w-4 text-primary" />
-                <span className="font-medium text-sm">{t("graph.deepResearch")}</span>
+                <span id="graph-research-dialog-title" className="font-medium text-sm">{t("graph.deepResearch")}</span>
               </div>
               <button
+                type="button"
+                aria-label={t("common.close")}
                 className="p-1 rounded hover:bg-muted text-muted-foreground"
                 onClick={() => {
                   researchDialogTokenRef.current += 1
@@ -1676,8 +1683,9 @@ export function GraphView() {
             ) : (
               <div className="p-4">
                 <div className="mb-3">
-                  <label className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.researchTopic")}</label>
+                  <label htmlFor="graph-research-topic" className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.researchTopic")}</label>
                   <input
+                    id="graph-research-topic"
                     type="text"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     value={researchDialog.topic}
@@ -1692,20 +1700,25 @@ export function GraphView() {
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.searchQueries")}</label>
                   <div className="flex flex-col gap-1.5">
                     {researchDialog.queries.map((q, idx) => (
-                      <input
-                        key={idx}
-                        type="text"
-                        className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                        value={q}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                          setResearchDialog((prev) => {
-                            if (!prev) return prev
-                            const newQueries = [...prev.queries]
-                            newQueries[idx] = e.target.value
-                            return { ...prev, queries: newQueries }
-                          })
-                        }
-                      />
+                      <div key={idx}>
+                        <label className="sr-only" htmlFor={`graph-research-query-${idx}`}>
+                          {t("graph.searchQueries")} {idx + 1}
+                        </label>
+                        <input
+                          id={`graph-research-query-${idx}`}
+                          type="text"
+                          className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          value={q}
+                          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                            setResearchDialog((prev) => {
+                              if (!prev) return prev
+                              const newQueries = [...prev.queries]
+                              newQueries[idx] = e.target.value
+                              return { ...prev, queries: newQueries }
+                            })
+                          }
+                        />
+                      </div>
                     ))}
                   </div>
                 </div>
