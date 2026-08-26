@@ -294,6 +294,8 @@ function ResearchTaskCard({
     <div className="rounded-lg border text-xs">
       {/* Header */}
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/50"
       >
