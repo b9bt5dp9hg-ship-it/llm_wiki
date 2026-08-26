@@ -668,6 +668,7 @@ export function GraphView() {
   const [graphPreview, setGraphPreview] = useState<GraphPreview | null>(null)
   const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const graphContainerRef = useRef<HTMLDivElement>(null)
+  const graphPreviewRequest = useRef(0)
   const researchDialogTokenRef = useRef(0)
   // i18n node type labels (populated after mount to support language switching)
   const [nodeTypeLabels, setNodeTypeLabels] = useState<Record<string, string>>({})
@@ -768,18 +769,26 @@ export function GraphView() {
     return () => window.cancelAnimationFrame(id)
   }, [graphSearchOpen])
 
+  useEffect(() => {
+    graphPreviewRequest.current++
+    setGraphPreview(null)
+  }, [project?.id])
+
   const handleNodeClick = useCallback(
     async (nodeId: string) => {
       const node = nodes.find((n) => n.id === nodeId)
       if (!node) return
+      const requestId = ++graphPreviewRequest.current
       try {
         const content = await readFile(node.path)
+        if (requestId !== graphPreviewRequest.current) return
         setGraphPreview({
           path: node.path,
           title: node.label || getFileName(node.path),
           content,
         })
       } catch (err) {
+        if (requestId !== graphPreviewRequest.current) return
         console.error("Failed to open wiki page:", err)
       }
     },
