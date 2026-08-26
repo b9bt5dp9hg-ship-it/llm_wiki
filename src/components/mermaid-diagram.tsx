@@ -1,6 +1,7 @@
 import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from "react"
 import { AlertTriangle, X, ZoomIn } from "lucide-react"
 import { useTranslation } from "react-i18next"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 interface MermaidDiagramProps {
   code: string
@@ -11,6 +12,7 @@ const svgCache = new Map<string, string>()
 export function MermaidDiagram({ code }: MermaidDiagramProps) {
   const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [svg, setSvg] = useState<string | null>(() => svgCache.get(code) ?? null)
   const [visible, setVisible] = useState(() => svgCache.has(code))
@@ -101,17 +103,17 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
   // Prevent layout shift: compute a stable min-height from code line count
   const estimatedHeight = Math.max(80, code.split("\n").length * 20)
 
-  // Close overlay on Escape
+  // Move focus into the modal and return it to the invoking control on close.
   useEffect(() => {
     if (!expanded) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setExpanded(false)
-        setScale(1)
-      }
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const frame = requestAnimationFrame(() => {
+      dialogRef.current?.querySelector<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")?.focus()
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      previousFocus?.focus()
     }
-    window.addEventListener("keydown", handleKey)
-    return () => window.removeEventListener("keydown", handleKey)
   }, [expanded])
 
   if (error) {
@@ -188,11 +190,21 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           onClick={() => { setExpanded(false); setScale(1) }}
         >
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-label={t("mermaid.diagram")}
             className="relative h-[90vh] w-[90vw] overflow-auto rounded-lg bg-background border border-border shadow-2xl p-6"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault()
+                setExpanded(false)
+                setScale(1)
+                return
+              }
+              trapTabInContainer(event.nativeEvent, event.currentTarget)
+            }}
           >
             <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
               <button

@@ -43,4 +43,10 @@ describe("fullscreen Mermaid semantics", () => {
     expect(source).toMatch(/event\.key === "Enter" \|\| event\.key === " "/)
     expect(source).toMatch(/group-focus-within\/diagram:opacity-100/)
   })
+
+  it("contains fullscreen keyboard focus and restores it on close", () => {
+    expect(source).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(source).toMatch(/dialogRef\.current\?\.querySelector<HTMLElement>/)
+    expect(source).toMatch(/previousFocus\?\.focus\(\)/)
+  })
 })
