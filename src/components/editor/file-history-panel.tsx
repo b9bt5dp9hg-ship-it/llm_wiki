@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Clock3, RotateCcw, X } from "lucide-react"
-import { restoreFileHistory, type FileHistoryEntry } from "@/commands/fs"
+import type { FileHistoryEntry } from "@/commands/fs"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { useWikiStore } from "@/stores/wiki-store"
 import { trapTabInContainer } from "@/components/search/search-a11y"
@@ -90,8 +90,9 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
       </aside>
       <main className="min-w-0 flex-1 overflow-auto p-4">
         {selected ? <><div className="mb-3 flex justify-end"><button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted" onClick={async () => {
-          const content = await restoreFileHistory(project.path, filePath, selected.id)
-          openFileInPreview(filePath, content)
+          const outcome = await historySessionRef.current.restore(project.path, filePath, selected.id)
+          if (outcome.status === "stale") return
+          openFileInPreview(filePath, outcome.content)
           setOpen(false)
         }}><RotateCcw className="h-3.5 w-3.5" />{t("preview.historyRestore")}</button></div><pre className="whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">{diff}</pre></> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{t("preview.historySelect")}</div>}
       </main>

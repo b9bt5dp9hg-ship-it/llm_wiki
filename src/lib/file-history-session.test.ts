@@ -23,4 +23,16 @@ describe("createFileHistorySession", () => {
     older.resolve([entry("a")])
     await expect(listA).resolves.toMatchObject({ status: "stale" })
   })
+
+  it("does not apply a restore after the active file was replaced", async () => {
+    const restore = createDeferred<string>()
+    const session = createFileHistorySession(vi.fn(), vi.fn(() => restore.promise))
+
+    const pending = session.restore("/project", "/project/wiki/a.md", "revision-a")
+    await flushMicrotasks()
+    session.invalidate()
+    restore.resolve("old A")
+
+    await expect(pending).resolves.toMatchObject({ status: "stale" })
+  })
 })
