@@ -25,6 +25,10 @@ describe("PDF preview accessibility", () => {
     expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomOut"\)\}/)
     expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomIn"\)\}/)
   })
+
+  it("exposes whether the text view toggle is active", () => {
+    expect(preview).toMatch(/aria-pressed=\{showText\}/)
+  })
 })
 
 describe("parseDelimitedContent", () => {
