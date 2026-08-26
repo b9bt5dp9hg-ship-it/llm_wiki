@@ -378,12 +378,13 @@ function extractedTextLabel(filePath: string): string {
 }
 
 function ImagePreview({ filePath, fileName }: { filePath: string; fileName: string }) {
+  const { t } = useTranslation()
   const src = convertFileSrc(filePath)
   const [expanded, setExpanded] = useState(false)
   const [zoom, setZoom] = useState(1)
   return (
     <div className="flex h-full flex-col p-6">
-      <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground"><span className="min-w-0 flex-1 truncate">{filePath}</span><button type="button" onClick={() => setExpanded(true)} className="rounded p-1 hover:bg-muted"><Maximize2 className="h-4 w-4" /></button></div>
+      <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground"><span className="min-w-0 flex-1 truncate">{filePath}</span><button type="button" aria-label={fileName} onClick={() => setExpanded(true)} className="rounded p-1 hover:bg-muted"><Maximize2 className="h-4 w-4" /></button></div>
       <div className="flex flex-1 items-center justify-center overflow-auto rounded-lg bg-muted/30">
         <img
           src={src}
@@ -391,7 +392,7 @@ function ImagePreview({ filePath, fileName }: { filePath: string; fileName: stri
           className="max-h-full max-w-full object-contain"
         />
       </div>
-      {expanded && <div className="fixed inset-0 z-[100] flex flex-col bg-background/95 p-4 backdrop-blur-sm"><div className="flex justify-end gap-1"><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.max(.25, value - .25))}><Minus className="h-4 w-4" /></button><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.min(5, value + .25))}><Plus className="h-4 w-4" /></button><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setExpanded(false)}><X className="h-4 w-4" /></button></div><div className="min-h-0 flex-1 overflow-auto text-center"><img src={src} alt={fileName} className="mx-auto max-w-none object-contain" style={{ width: `${zoom * 100}%` }} /></div></div>}
+      {expanded && <div role="dialog" aria-modal="true" aria-labelledby="fullscreen-image-title" className="fixed inset-0 z-[100] flex flex-col bg-background/95 p-4 backdrop-blur-sm"><span id="fullscreen-image-title" className="sr-only">{fileName}</span><div className="flex justify-end gap-1"><button type="button" aria-label={t("settings.sections.interface.zoomOut")} className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.max(.25, value - .25))}><Minus className="h-4 w-4" /></button><button type="button" aria-label={t("settings.sections.interface.zoomIn")} className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.min(5, value + .25))}><Plus className="h-4 w-4" /></button><button type="button" aria-label={t("common.close")} className="rounded p-2 hover:bg-muted" onClick={() => setExpanded(false)}><X className="h-4 w-4" /></button></div><div className="min-h-0 flex-1 overflow-auto text-center"><img src={src} alt={fileName} className="mx-auto max-w-none object-contain" style={{ width: `${zoom * 100}%` }} /></div></div>}
     </div>
   )
 }

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { clampPdfPage, decodeBase64, parseDelimitedContent } from "./file-preview"
 
@@ -22,5 +23,19 @@ describe("parseDelimitedContent", () => {
       ["B", "line 1\nline 2"],
       ["C", 'a"b'],
     ])
+  })
+})
+
+describe("fullscreen image preview semantics", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function ImagePreview")
+  const end = source.indexOf("function VideoPreview", start)
+  const preview = source.slice(start, end)
+
+  it("exposes a named modal and names every icon-only control", () => {
+    expect(preview).toMatch(/role="dialog"/)
+    expect(preview).toMatch(/aria-modal="true"/)
+    expect(preview).toMatch(/aria-label=\{fileName\}/)
+    expect(preview.match(/aria-label=/g)).toHaveLength(4)
   })
 })
