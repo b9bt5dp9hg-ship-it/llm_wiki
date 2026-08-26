@@ -66,7 +66,7 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
         <div className="space-y-1 overflow-auto">
           {loading && <p className="text-xs text-muted-foreground">{t("preview.historyLoading")}</p>}
           {!loading && entries.length === 0 && <p className="text-xs text-muted-foreground">{t("preview.historyEmpty")}</p>}
-          {entries.map((entry) => <button key={entry.id} type="button" onClick={() => setSelected(entry)} className={`w-full rounded border px-2 py-2 text-left text-xs ${selected?.id === entry.id ? "border-primary bg-primary/5" : "border-transparent hover:bg-muted"}`}>
+          {entries.map((entry) => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id} onClick={() => setSelected(entry)} className={`w-full rounded border px-2 py-2 text-left text-xs ${selected?.id === entry.id ? "border-primary bg-primary/5" : "border-transparent hover:bg-muted"}`}>
             <div className="font-medium">{entry.author} · {entry.tool}</div>
             <div className="mt-1 text-[10px] text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</div>
           </button>)}

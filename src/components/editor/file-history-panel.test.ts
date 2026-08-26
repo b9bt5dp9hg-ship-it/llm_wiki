@@ -20,4 +20,8 @@ describe("file history panel accessibility", () => {
     expect(panel).toMatch(/event\.key === "Escape"[\s\S]*setOpen\(false\)/)
     expect(panel).toMatch(/previousFocus\?\.focus\(\)/)
   })
+
+  it("exposes the selected history revision", () => {
+    expect(panel).toMatch(/aria-pressed=\{selected\?\.id === entry\.id\}/)
+  })
 })
