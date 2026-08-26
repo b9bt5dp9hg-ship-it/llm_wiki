@@ -1549,6 +1549,8 @@ export function GraphView() {
                   <span className="text-sm font-medium">{t("graph.insights")}</span>
                 </div>
                 <button
+                  type="button"
+                  aria-label={t("common.close")}
                   className="p-1 rounded hover:bg-muted text-muted-foreground"
                   onClick={() => {
                     setShowInsights(false)
@@ -1586,6 +1588,8 @@ export function GraphView() {
                                 {conn.source.label} ↔ {conn.target.label}
                               </span>
                               <button
+                                type="button"
+                                aria-label={t("common.dismiss")}
                                 className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1628,6 +1632,8 @@ export function GraphView() {
                           <div className="flex items-start justify-between gap-2 mb-1">
                             <div className="font-medium text-xs text-foreground">{gap.title}</div>
                             <button
+                              type="button"
+                              aria-label={t("common.dismiss")}
                               className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
                               title={t("common.dismiss")}
                               onClick={(e) => {
@@ -1787,6 +1793,7 @@ function GraphPreviewPanel({
   onClose: () => void
   onContentChange: (content: string) => void
 }) {
+  const { t } = useTranslation()
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedRef = useRef(preview.content)
   const category = getFileCategory(preview.path)
@@ -1831,6 +1838,7 @@ function GraphPreviewPanel({
         </span>
         <button
           type="button"
+          aria-label={t("common.close")}
           onClick={onClose}
           className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent"
         >

@@ -30,3 +30,10 @@ describe("graph research dialog semantics", () => {
     expect(view).toMatch(/previousFocus\?\.focus\(\)/)
   })
 })
+
+describe("graph icon controls", () => {
+  it("names insights close/dismiss and preview close buttons", () => {
+    expect(view.match(/aria-label=\{t\("common\.close"\)\}/g)).toHaveLength(3)
+    expect(view.match(/aria-label=\{t\("common\.dismiss"\)\}/g)).toHaveLength(2)
+  })
+})
