@@ -621,6 +621,8 @@ function ActivityRow({ item, onCancel }: { item: ActivityItem; onCancel?: () => 
         </div>
         {item.status === "running" && onCancel && (
           <button
+            type="button"
+            aria-label={t("common.cancel")}
             onClick={onCancel}
             className="shrink-0 p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
             title={t("common.cancel")}

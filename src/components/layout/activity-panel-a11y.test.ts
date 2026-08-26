@@ -29,4 +29,10 @@ describe("activity panel accessibility", () => {
     expect(row).toMatch(/aria-label=\{t\("common\.retry"\)\}/)
     expect(row).toMatch(/aria-label=\{t\("common\.ignore"\)\}/)
   })
+
+  it("names the icon-only running-activity cancel action", () => {
+    const start = source.indexOf("function ActivityRow")
+    const row = source.slice(start)
+    expect(row).toMatch(/aria-label=\{t\("common\.cancel"\)\}/)
+  })
 })
