@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
     }),
     emit: (event: string, payload: unknown) => listeners[event]?.({ payload }),
     stopProjectFileWatcher: vi.fn(async () => undefined),
+    retryFileChangeTask: vi.fn(async (): Promise<import("@/commands/file-sync").FileChangeQueue> => ({ version: 1, tasks: [] })),
     rescanProjectFiles: vi.fn(async (projectId: string): Promise<{
       queue: {
         version: number
@@ -100,6 +101,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@/commands/file-sync", () => ({
   rescanProjectFiles: mocks.rescanProjectFiles,
+  retryFileChangeTask: mocks.retryFileChangeTask,
   startProjectFileWatcher: mocks.startProjectFileWatcher,
   stopProjectFileWatcher: mocks.stopProjectFileWatcher,
 }))
@@ -174,6 +176,36 @@ describe("project file sync", () => {
       maxContextSize: 128000,
     })
     useFileSyncStore.getState().clear()
+  })
+
+  it("does not publish a retried file-change queue after switching projects", async () => {
+    const { retryProjectFileChangeTask } = await import("@/lib/project-file-sync")
+    const { useFileSyncStore } = await import("@/stores/file-sync-store")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    mocks.retryFileChangeTask.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      return {
+        version: 1,
+        tasks: [{
+          id: "stale",
+          projectId: "A",
+          path: "raw/sources/stale.md",
+          kind: "modified" as const,
+          status: "pending" as const,
+          createdAt: 1,
+          updatedAt: 1,
+          retryCount: 1,
+          needsRerun: false,
+        }],
+      }
+    })
+
+    await retryProjectFileChangeTask(projectA, "stale")
+
+    expect(useFileSyncStore.getState().tasks).toEqual([])
   })
 
   it("does not apply a stale start result after the active project changes", async () => {
