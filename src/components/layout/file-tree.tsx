@@ -42,6 +42,8 @@ function TreeNode({
     return (
       <div>
         <button
+          type="button"
+          aria-expanded={expanded}
           onClick={() => void handleToggle()}
           className="flex w-full items-center gap-1 py-1 text-sm text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
           style={{ paddingLeft }}
