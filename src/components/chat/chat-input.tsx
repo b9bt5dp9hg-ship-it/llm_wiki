@@ -612,6 +612,11 @@ export function ChatInput({
           ))}
           <textarea
             ref={textareaRef}
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded={showSlashSkills || showContextFiles}
+            aria-controls={showSlashSkills ? "chat-slash-skill-options" : showContextFiles ? "chat-context-file-options" : undefined}
+            aria-activedescendant={showSlashSkills ? `chat-slash-skill-option-${slashSkillIndex}` : showContextFiles ? `chat-context-file-option-${contextFileIndex}` : undefined}
             value={value}
             dir="auto"
             onChange={handleInput}
@@ -630,13 +635,16 @@ export function ChatInput({
             <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground">
               {t("chat.slashSkillHint")}
             </div>
-            <div className="max-h-64 overflow-y-auto">
+            <div id="chat-slash-skill-options" role="listbox" className="max-h-64 overflow-y-auto">
               {slashSkillOptions.map((skill, index) => {
                 const active = index === slashSkillIndex
                 const selected = selectedSkills.includes(skill.id)
                 return (
                   <button
                     key={`${skill.source}:${skill.id}`}
+                    id={`chat-slash-skill-option-${index}`}
+                    role="option"
+                    aria-selected={active}
                     type="button"
                     onMouseDown={(event) => {
                       event.preventDefault()
@@ -667,10 +675,13 @@ export function ChatInput({
             <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground">
               {t("chat.contextFileHint")}
             </div>
-            <div className="max-h-64 overflow-y-auto">
+            <div id="chat-context-file-options" role="listbox" className="max-h-64 overflow-y-auto">
               {contextFileOptions.map((path, index) => (
                 <button
                   key={path}
+                  id={`chat-context-file-option-${index}`}
+                  role="option"
+                  aria-selected={index === contextFileIndex}
                   type="button"
                   onMouseDown={(event) => {
                     event.preventDefault()

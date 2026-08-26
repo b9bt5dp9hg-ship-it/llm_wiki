@@ -108,3 +108,16 @@ describe("chat attachment removal accessibility", () => {
     expect(source).toMatch(/aria-label=\{t\("chat\.removeSkill", \{ name: skill\.name \}\)\}/)
   })
 })
+
+describe("chat autocomplete accessibility", () => {
+  const source = readFileSync(new URL("./chat-input.tsx", import.meta.url), "utf8")
+
+  it("connects the chat combobox to named listbox options", () => {
+    expect(source).toMatch(/role="combobox"/)
+    expect(source).toMatch(/aria-autocomplete="list"/)
+    expect(source).toMatch(/id="chat-slash-skill-options" role="listbox"/)
+    expect(source).toMatch(/id="chat-context-file-options" role="listbox"/)
+    expect(source.match(/role="option"/g)).toHaveLength(2)
+    expect(source).toMatch(/aria-activedescendant=/)
+  })
+})
