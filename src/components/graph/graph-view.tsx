@@ -32,6 +32,7 @@ import {
 import { NeuralNightOverlay } from "@/components/graph/neural-night-overlay"
 import { wikiTypeLabel } from "@/lib/wiki-page-types"
 import { useTranslation } from "react-i18next"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 type GraphThemePalette = {
   canvasBackground: string
@@ -670,6 +671,7 @@ export function GraphView() {
   const graphContainerRef = useRef<HTMLDivElement>(null)
   const graphPreviewRequest = useRef(0)
   const researchDialogTokenRef = useRef(0)
+  const researchDialogRef = useRef<HTMLDivElement>(null)
   // i18n node type labels (populated after mount to support language switching)
   const [nodeTypeLabels, setNodeTypeLabels] = useState<Record<string, string>>({})
   const graphSearchInputRef = useRef<HTMLInputElement>(null)
@@ -704,6 +706,7 @@ export function GraphView() {
     queries: string[]
     dismissKey?: string
   } | null>(null)
+  const researchDialogOpen = researchDialog !== null
   const lastLoadedVersion = useRef(-1)
   const graphLoadRequest = useRef(0)
 
@@ -830,6 +833,25 @@ export function GraphView() {
     }
   }, [highlightedNodes])
 
+  const closeResearchDialog = useCallback(() => {
+    researchDialogTokenRef.current += 1
+    setResearchDialog(null)
+  }, [])
+
+  useEffect(() => {
+    if (!researchDialogOpen) return
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      researchDialogRef.current?.querySelector<HTMLElement>("input, button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
+    }
+  }, [researchDialogOpen])
+
   const handleResearchClick = useCallback(async (gapTitle: string, gapDescription: string, gapType: string, dismissKey?: string) => {
     const store = useWikiStore.getState()
     if (!store.project) return
@@ -879,8 +901,8 @@ export function GraphView() {
       setDismissedInsights((prev) => new Set([...prev, researchDialog.dismissKey!]))
       setHighlightedNodes(new Set())
     }
-    setResearchDialog(null)
-  }, [researchDialog])
+    closeResearchDialog()
+  }, [closeResearchDialog, researchDialog])
 
   // Unmount sigma when panels resize or toggle to prevent WebGL crash.
   // Sigma crashes with "could not find suitable program for node type circle"
@@ -1652,9 +1674,18 @@ export function GraphView() {
       {researchDialog && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
           <div
+            ref={researchDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="graph-research-dialog-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault()
+                closeResearchDialog()
+                return
+              }
+              trapTabInContainer(event.nativeEvent, event.currentTarget)
+            }}
             className="w-[480px] rounded-lg border bg-background shadow-xl"
           >
             <div className="flex items-center justify-between border-b px-4 py-3">
@@ -1666,10 +1697,7 @@ export function GraphView() {
                 type="button"
                 aria-label={t("common.close")}
                 className="p-1 rounded hover:bg-muted text-muted-foreground"
-                onClick={() => {
-                  researchDialogTokenRef.current += 1
-                  setResearchDialog(null)
-                }}
+                onClick={closeResearchDialog}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1726,10 +1754,7 @@ export function GraphView() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      researchDialogTokenRef.current += 1
-                      setResearchDialog(null)
-                    }}
+                    onClick={closeResearchDialog}
                   >
                     {t("graph.cancel")}
                   </Button>

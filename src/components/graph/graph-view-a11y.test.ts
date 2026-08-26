@@ -21,4 +21,12 @@ describe("graph research dialog semantics", () => {
     expect(dialog).toMatch(/htmlFor=\{`graph-research-query-\$\{idx\}`\}/)
     expect(dialog).toMatch(/id=\{`graph-research-query-\$\{idx\}`\}/)
   })
+
+  it("moves focus inside, traps Tab, closes on Escape, and restores focus", () => {
+    expect(view).toMatch(/document\.activeElement/)
+    expect(view).toMatch(/researchDialogRef\.current\?\.querySelector<HTMLElement>[\s\S]*\.focus\(\)/)
+    expect(dialog).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(dialog).toMatch(/event\.key === "Escape"[\s\S]*closeResearchDialog\(\)/)
+    expect(view).toMatch(/previousFocus\?\.focus\(\)/)
+  })
 })
