@@ -270,6 +270,8 @@ export function ActivityPanel() {
   return (
     <div className="border-t bg-muted/30">
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/50"
       >
