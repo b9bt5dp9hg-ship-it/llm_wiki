@@ -403,7 +403,13 @@ export function ActivityPanel() {
                   </button>
                 )}
               </div>
-              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={queueSummary.total}
+                aria-valuenow={queueSummary.completed + queueSummary.failed + queueSummary.cancelled}
+                className="h-1.5 rounded-full bg-muted overflow-hidden"
+              >
                 <div
                   className="h-full rounded-full bg-primary transition-all"
                   style={{ width: `${((queueSummary.completed + queueSummary.failed + queueSummary.cancelled) / Math.max(queueSummary.total, 1)) * 100}%` }}

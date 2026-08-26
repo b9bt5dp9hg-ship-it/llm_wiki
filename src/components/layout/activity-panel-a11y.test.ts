@@ -35,4 +35,11 @@ describe("activity panel accessibility", () => {
     const row = source.slice(start)
     expect(row).toMatch(/aria-label=\{t\("common\.cancel"\)\}/)
   })
+
+  it("exposes determinate ingest progress to assistive technology", () => {
+    expect(source).toMatch(/role="progressbar"/)
+    expect(source).toMatch(/aria-valuemin=\{0\}/)
+    expect(source).toMatch(/aria-valuemax=\{queueSummary\.total\}/)
+    expect(source).toMatch(/aria-valuenow=\{queueSummary\.completed \+ queueSummary\.failed \+ queueSummary\.cancelled\}/)
+  })
 })
