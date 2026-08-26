@@ -22,6 +22,7 @@ export function TemplatePicker({ selected, onSelect }: TemplatePickerProps) {
           <button
             key={template.id}
             type="button"
+            aria-pressed={selected === template.id}
             onClick={() => onSelect(template.id)}
             className={cn(
               "flex flex-col gap-1 rounded-md border p-3 text-left transition-colors hover:bg-accent",
