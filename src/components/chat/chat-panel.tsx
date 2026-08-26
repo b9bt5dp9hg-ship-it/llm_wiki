@@ -508,6 +508,7 @@ export function ChatPanel() {
   const activeRunIdRef = useRef<string | null>(null)
   const runIdRef = useRef(0)
   const dismissedGeneratedOutputsKeyRef = useRef<string | null>(null)
+  const generatedOutputRequestRef = useRef(0)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [agentEvents, setAgentEvents] = useState<ChatAgentEvent[]>([])
@@ -557,6 +558,7 @@ export function ChatPanel() {
     if (useChatStore.getState().activeConversationId !== conversationId) return
     const outputs = (references ?? []).filter((ref) => ref.kind === "workspace")
     if (outputs.length === 0 || !project) return
+    const requestId = ++generatedOutputRequestRef.current
     const previews = outputs.flatMap((ref) => {
       const outputPath = confineProjectFilePath(project.path, ref.path)
       if (!outputPath) return []
@@ -572,6 +574,8 @@ export function ChatPanel() {
     setGeneratedOutputPreviews(previews)
     if (outputs.length === 1) {
       void buildGeneratedOutputPreview(outputs[0]).then((preview) => {
+        if (requestId !== generatedOutputRequestRef.current) return
+        if (useChatStore.getState().activeConversationId !== conversationId) return
         if (preview) {
           setGeneratedOutputPreviews([preview])
           setGeneratedOutputPreview(preview)
@@ -605,11 +609,12 @@ export function ChatPanel() {
   }, [scrollKey])
 
   useEffect(() => {
+    generatedOutputRequestRef.current++
     setReferencePreview(null)
     setGeneratedOutputPreviews([])
     setGeneratedOutputPreview(null)
     dismissedGeneratedOutputsKeyRef.current = null
-  }, [activeConversationId])
+  }, [activeConversationId, project?.id])
 
   useEffect(() => {
     if (!project || activeStreaming || !latestGeneratedOutputMessage) return
@@ -650,7 +655,11 @@ export function ChatPanel() {
   }, [])
 
   const openGeneratedOutputModal = useCallback((preview: ChatReferencePreview) => {
-    void loadGeneratedOutputPreview(preview).then(setGeneratedOutputPreview)
+    const requestId = ++generatedOutputRequestRef.current
+    void loadGeneratedOutputPreview(preview).then((loaded) => {
+      if (requestId !== generatedOutputRequestRef.current) return
+      setGeneratedOutputPreview(loaded)
+    })
   }, [loadGeneratedOutputPreview])
 
   const closeGeneratedOutputsPanel = useCallback(() => {
