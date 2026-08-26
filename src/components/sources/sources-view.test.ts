@@ -49,6 +49,14 @@ describe("source delete accessibility", () => {
   })
 })
 
+describe("source tree accessibility", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("exposes source folders as non-submit disclosure controls", () => {
+    expect(source).toMatch(/type="button"\s+aria-expanded=\{!isCollapsed\}/)
+  })
+})
+
 describe("source preview request ordering", () => {
   const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
 

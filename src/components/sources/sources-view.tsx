@@ -712,6 +712,8 @@ function SourceTree({
                 style={{ paddingLeft: `${depth * 16 + 4}px` }}
               >
                 <button
+                  type="button"
+                  aria-expanded={!isCollapsed}
                   onClick={() => {
                     if (!forceExpanded) toggle(node.path)
                   }}
