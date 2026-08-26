@@ -337,7 +337,14 @@ describe("project output-language write serialization", () => {
 describe("project file-sync write serialization", () => {
   beforeEach(() => {
     memory.clear()
+    save.mockClear()
     getHooks.afterFileSyncSnapshot = undefined
+  })
+
+  it("force-saves the watcher toggle before returning", async () => {
+    await saveProjectFileSyncEnabled(false, "project-a")
+
+    expect(save).toHaveBeenCalledTimes(1)
   })
 
   it("does not lose another project's setting when two saves overlap", async () => {

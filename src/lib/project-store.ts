@@ -474,6 +474,7 @@ export async function saveProjectFileSyncEnabled(enabled: boolean, projectId?: s
       ...existing,
       [projectId ?? "default"]: enabled,
     })
+    await store.save()
   })
   projectFileSyncWrite = write.catch(() => {})
   await write
