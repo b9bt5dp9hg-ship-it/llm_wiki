@@ -13,6 +13,14 @@ export function createFileHistorySession(
   restoreFn: (projectPath: string, filePath: string, historyId: string) => Promise<string> = restoreFileHistory,
 ) {
   let generation = 0
+  let restoreTail: Promise<unknown> = Promise.resolve()
+
+  function enqueueRestore<T>(job: () => Promise<T>): Promise<T> {
+    const run = restoreTail.then(job, job)
+    restoreTail = run.then(() => undefined, () => undefined)
+    return run
+  }
+
   return {
     get generation() { return generation },
     invalidate() { generation += 1 },
@@ -31,15 +39,17 @@ export function createFileHistorySession(
     },
     async restore(projectPath: string, filePath: string, historyId: string): Promise<FileHistoryRestoreOutcome> {
       const token = ++generation
-      try {
-        const content = await restoreFn(projectPath, filePath, historyId)
-        return token === generation
-          ? { status: "applied", content, token }
-          : { status: "stale", token }
-      } catch (error) {
-        if (token !== generation) return { status: "stale", token }
-        throw error
-      }
+      return enqueueRestore(async () => {
+        try {
+          const content = await restoreFn(projectPath, filePath, historyId)
+          return token === generation
+            ? { status: "applied", content, token }
+            : { status: "stale", token }
+        } catch (error) {
+          if (token !== generation) return { status: "stale", token }
+          throw error
+        }
+      })
     },
   }
 }
