@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Clock3, RotateCcw, X } from "lucide-react"
-import { listFileHistory, restoreFileHistory, type FileHistoryEntry } from "@/commands/fs"
+import { restoreFileHistory, type FileHistoryEntry } from "@/commands/fs"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { useWikiStore } from "@/stores/wiki-store"
 import { trapTabInContainer } from "@/components/search/search-a11y"
+import { createFileHistorySession } from "@/lib/file-history-session"
 
 export function FileHistoryButton({ filePath, currentContent }: { filePath: string; currentContent: string }) {
   const { t } = useTranslation()
@@ -15,6 +16,14 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   const [selected, setSelected] = useState<FileHistoryEntry | null>(null)
   const [loading, setLoading] = useState(false)
   const historyDialogRef = useRef<HTMLDivElement>(null)
+  const historySessionRef = useRef(createFileHistorySession())
+  useEffect(() => {
+    historySessionRef.current.invalidate()
+    setOpen(false)
+    setEntries([])
+    setSelected(null)
+    setLoading(false)
+  }, [filePath, project?.id])
   useEffect(() => {
     if (!open) return
     const previousFocus = document.activeElement instanceof HTMLElement
@@ -33,10 +42,17 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   const show = async () => {
     setOpen(true)
     setLoading(true)
+    const session = historySessionRef.current
+    const pending = session.list(project.path, filePath)
+    const token = session.generation
     try {
-      setEntries(await listFileHistory(project.path, filePath))
+      const outcome = await pending
+      if (outcome.status === "applied") {
+        setEntries(outcome.entries)
+        setSelected(null)
+      }
     } finally {
-      setLoading(false)
+      if (session.isCurrent(token)) setLoading(false)
     }
   }
   const diff = selected ? summarizeAgentFileChange({
