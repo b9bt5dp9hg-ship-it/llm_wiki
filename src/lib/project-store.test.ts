@@ -215,7 +215,15 @@ describe("removeFromRecentProjects durability", () => {
 describe("recent-project addition serialization", () => {
   beforeEach(() => {
     memory.clear()
+    save.mockClear()
     getHooks.afterRecentSnapshot = undefined
+  })
+
+  it("force-saves a newly opened project before returning", async () => {
+    await addToRecentProjects(KEEP)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(save).toHaveBeenCalledTimes(1)
   })
 
   it("does not lose a project when two additions overlap", async () => {

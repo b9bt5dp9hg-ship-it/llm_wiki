@@ -40,6 +40,10 @@ export async function addToRecentProjects(
     const filtered = existing.filter((p) => p.path !== project.path)
     const updated = [project, ...filtered].slice(0, 10)
     await store.set(RECENT_PROJECTS_KEY, updated)
+    // Opening a project is also the durable startup pointer update path.
+    // Do not leave it behind the store's 100ms auto-save debounce: the app
+    // can be closed immediately after the window appears.
+    await store.save()
   })
   recentProjectsWrite = write.catch(() => {})
   await write
