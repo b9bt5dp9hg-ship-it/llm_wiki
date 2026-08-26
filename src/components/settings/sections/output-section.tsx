@@ -44,13 +44,19 @@ export function OutputSection({ draft, setDraft }: Props) {
         <p className="text-xs text-muted-foreground">
           {t("settings.sections.output.historyHint")}
         </p>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="flex flex-wrap gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.output.historyLength")}
+        >
           {HISTORY_OPTIONS.map((n) => {
             const active = draft.maxHistoryMessages === n
             return (
               <button
                 key={n}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => setDraft("maxHistoryMessages", n)}
                 className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
                   active
