@@ -78,6 +78,8 @@ export function ResearchPanel() {
           )}
         </div>
         <button
+          type="button"
+          aria-label={t("common.close")}
           onClick={() => setPanelOpen(false)}
           className="rounded p-1 text-muted-foreground hover:bg-accent"
         >
@@ -90,6 +92,7 @@ export function ResearchPanel() {
         <input
           value={inputValue}
           dir="auto"
+          aria-label={t("research.inputPlaceholder")}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={(e) => {
             if (isImeComposing(e)) return
@@ -98,7 +101,7 @@ export function ResearchPanel() {
           className="flex-1 rounded border bg-background px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
           placeholder={t("research.inputPlaceholder")}
         />
-        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleStartResearch} disabled={!inputValue.trim()}>
+        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label={t("graph.startResearch")} onClick={handleStartResearch} disabled={!inputValue.trim()}>
           <Send className="h-3.5 w-3.5" />
         </Button>
       </div>
