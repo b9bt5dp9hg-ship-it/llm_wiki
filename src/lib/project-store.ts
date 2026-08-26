@@ -33,16 +33,21 @@ export async function getLastProject(): Promise<WikiProject | null> {
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
-  const store = await getStore()
-  await store.set(LAST_PROJECT_KEY, project)
-  await addToRecentProjects(project)
+  await writeRecentProject(project, true)
 }
 
 export async function addToRecentProjects(
   project: WikiProject
 ): Promise<void> {
+  await writeRecentProject(project, false)
+}
+
+async function writeRecentProject(project: WikiProject, updateLastProject: boolean): Promise<void> {
   const write = recentProjectsWrite.then(async () => {
     const store = await getStore()
+    if (updateLastProject) {
+      await store.set(LAST_PROJECT_KEY, project)
+    }
     const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
     const projectKey = recentProjectPathKey(project.path)
     const filtered = existing.filter((p) => recentProjectPathKey(p.path) !== projectKey)

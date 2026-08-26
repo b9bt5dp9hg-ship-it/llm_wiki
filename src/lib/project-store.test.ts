@@ -9,6 +9,7 @@ const { memory, save, getHooks } = vi.hoisted(() => {
     afterOutputLanguageSnapshot: undefined as undefined | (() => Promise<void>),
     afterFileSyncSnapshot: undefined as undefined | (() => Promise<void>),
     afterSourceWatchSnapshot: undefined as undefined | (() => Promise<void>),
+    beforeLastProjectSet: undefined as undefined | (() => Promise<void>),
   }
   return { memory, save, getHooks }
 })
@@ -32,6 +33,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
       return value
     },
     async set(key: string, value: unknown) {
+      if (key === "lastProject" && getHooks.beforeLastProjectSet) {
+        await getHooks.beforeLastProjectSet()
+      }
       memory.set(key, value)
     },
     async delete(key: string) {
@@ -51,6 +55,7 @@ import {
   loadSourceWatchConfig,
   removeFromRecentProjects,
   saveOutputLanguage,
+  saveLastProject,
   saveProjectFileSyncEnabled,
   saveSourceWatchConfig,
 } from "./project-store"
@@ -162,6 +167,7 @@ describe("removeFromRecentProjects durability", () => {
     memory.clear()
     save.mockClear()
     getHooks.afterRecentSnapshot = undefined
+    getHooks.beforeLastProjectSet = undefined
     memory.set("recentProjects", [GONE, KEEP])
     memory.set("lastProject", GONE)
   })
@@ -262,6 +268,30 @@ describe("recent-project addition serialization", () => {
     await Promise.all([first, second])
     getHooks.afterRecentSnapshot = undefined
 
+    expect(await getRecentProjects()).toEqual([KEEP, GONE])
+  })
+
+  it("keeps the newest last-project pointer when two opens overlap", async () => {
+    const firstSetStarted = createDeferred<void>()
+    const releaseFirstSet = createDeferred<void>()
+    let sets = 0
+    getHooks.beforeLastProjectSet = async () => {
+      sets += 1
+      if (sets === 1) {
+        firstSetStarted.resolve()
+        await releaseFirstSet.promise
+      }
+    }
+
+    const first = saveLastProject(GONE)
+    await firstSetStarted.promise
+    const second = saveLastProject(KEEP)
+    await flushMicrotasks()
+    releaseFirstSet.resolve()
+    await Promise.all([first, second])
+    getHooks.beforeLastProjectSet = undefined
+
+    expect(await getLastProject()).toEqual(KEEP)
     expect(await getRecentProjects()).toEqual([KEEP, GONE])
   })
 })
