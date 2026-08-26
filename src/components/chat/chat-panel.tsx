@@ -27,6 +27,7 @@ import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { ReferenceKnowledgeGraph } from "@/components/chat/reference-knowledge-graph"
 import { namedIconButtonProps, revealOnHoverOrFocusClass, selectRowProps } from "@/components/list-row-a11y"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 type InternalChatSendOptions = ChatSendOptions & {
   suppressUserMessage?: boolean
@@ -1640,19 +1641,36 @@ function GeneratedOutputPreviewDialog({
 }) {
   const { t } = useTranslation()
   const displayTitle = preview.title || getFileName(preview.path)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose()
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current?.querySelector<HTMLElement>("button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
     }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="generated-output-preview-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault()
+            onCloseRef.current()
+            return
+          }
+          trapTabInContainer(event.nativeEvent, event.currentTarget)
+        }}
         className="flex h-[86vh] w-[80vw] min-w-0 max-w-[1600px] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl"
       >
         <div className="flex min-h-12 items-center gap-3 border-b px-4 py-2">

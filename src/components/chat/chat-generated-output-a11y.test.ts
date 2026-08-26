@@ -13,4 +13,12 @@ describe("generated-output preview dialog accessibility", () => {
     expect(dialog).toMatch(/aria-labelledby="generated-output-preview-title"/)
     expect(dialog).toMatch(/id="generated-output-preview-title"/)
   })
+
+  it("owns focus, traps Tab, closes on Escape, and restores focus", () => {
+    expect(dialog).toMatch(/document\.activeElement/)
+    expect(dialog).toMatch(/dialogRef\.current\?\.querySelector<HTMLElement>[\s\S]*\.focus\(\)/)
+    expect(dialog).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(dialog).toMatch(/event\.key === "Escape"[\s\S]*onCloseRef\.current\(\)/)
+    expect(dialog).toMatch(/previousFocus\?\.focus\(\)/)
+  })
 })
