@@ -553,7 +553,8 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={() => removeImage(i)}
-                  className="absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100"
+                  aria-label={t("chat.removeImage")}
+                  className="absolute right-0.5 top-0.5 rounded-full bg-background/80 p-0.5 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
                   title={t("chat.removeImage")}
                 >
                   <X className="h-3 w-3" />
@@ -582,6 +583,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => onSelectedContextFilesChange(selectedContextFiles.filter((item) => item !== path))}
+                aria-label={t("chat.removeContextFile", { name: path })}
                 className="rounded p-0.5 opacity-70 hover:bg-blue-500/15 group-hover:opacity-100"
                 title={t("chat.removeContextFile", { name: path })}
               >
@@ -600,6 +602,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={() => removeSelectedSkill(skill.id)}
+                aria-label={t("chat.removeSkill", { name: skill.name })}
                 className="rounded p-0.5 text-emerald-700/60 opacity-70 transition hover:bg-emerald-500/15 hover:text-emerald-700 group-hover:opacity-100 dark:text-emerald-300/70 dark:hover:text-emerald-300"
                 title={t("chat.removeSkill", { name: skill.name })}
               >

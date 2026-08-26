@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import {
   filterSlashSkillOptions,
@@ -95,5 +96,15 @@ describe("chat slash skill helpers", () => {
     expect(skillChipDeleteTarget("Delete", "hello", 0, 0, 2)).toBeNull()
     expect(skillChipDeleteTarget("Backspace", "hello", 0, 2, 2)).toBeNull()
     expect(skillChipDeleteTarget("Backspace", "hello", 0, 0, 0)).toBeNull()
+  })
+})
+
+describe("chat attachment removal accessibility", () => {
+  const source = readFileSync(new URL("./chat-input.tsx", import.meta.url), "utf8")
+
+  it("names image, context-file, and skill removal controls", () => {
+    expect(source).toMatch(/aria-label=\{t\("chat\.removeImage"\)\}/)
+    expect(source).toMatch(/aria-label=\{t\("chat\.removeContextFile", \{ name: path \}\)\}/)
+    expect(source).toMatch(/aria-label=\{t\("chat\.removeSkill", \{ name: skill\.name \}\)\}/)
   })
 })
