@@ -50,6 +50,7 @@ const CUSTOM_LLM_PRESETS_KEY = "customLlmPresets"
 let projectLlmOverrideWrite = Promise.resolve()
 let customLlmPresetWrite = Promise.resolve()
 let recentProjectsWrite = Promise.resolve()
+let projectOutputLanguageWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   const store = await getStore()
@@ -419,12 +420,16 @@ const PROJECT_FILE_SYNC_KEY = "projectFileSyncEnabled"
 const SOURCE_WATCH_CONFIG_KEY = "sourceWatchConfig"
 
 export async function saveOutputLanguage(lang: OutputLanguage, projectId?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
-    const existing = (await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
-    await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
-  }
-  await store.set(OUTPUT_LANGUAGE_KEY, lang)
+  const write = projectOutputLanguageWrite.then(async () => {
+    const store = await getStore()
+    if (projectId) {
+      const existing = (await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
+      await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
+    }
+    await store.set(OUTPUT_LANGUAGE_KEY, lang)
+  })
+  projectOutputLanguageWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadOutputLanguage(projectId?: string): Promise<OutputLanguage | null> {

@@ -6,6 +6,7 @@ const { memory, save, getHooks } = vi.hoisted(() => {
   const save = vi.fn(async () => {})
   const getHooks = {
     afterRecentSnapshot: undefined as undefined | (() => Promise<void>),
+    afterOutputLanguageSnapshot: undefined as undefined | (() => Promise<void>),
   }
   return { memory, save, getHooks }
 })
@@ -16,6 +17,9 @@ vi.mock("@tauri-apps/plugin-store", () => ({
       const value = memory.get(key)
       if (key === "recentProjects" && getHooks.afterRecentSnapshot) {
         await getHooks.afterRecentSnapshot()
+      }
+      if (key === "projectOutputLanguages" && getHooks.afterOutputLanguageSnapshot) {
+        await getHooks.afterOutputLanguageSnapshot()
       }
       return value
     },
@@ -33,7 +37,9 @@ import {
   __projectStoreTest,
   getLastProject,
   getRecentProjects,
+  loadOutputLanguage,
   removeFromRecentProjects,
+  saveOutputLanguage,
 } from "./project-store"
 
 const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
@@ -189,5 +195,36 @@ describe("removeFromRecentProjects durability", () => {
     getHooks.afterRecentSnapshot = undefined
 
     expect(await getRecentProjects()).toEqual([KEEP])
+  })
+})
+
+describe("project output-language write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    getHooks.afterOutputLanguageSnapshot = undefined
+  })
+
+  it("does not lose another project's language when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterOutputLanguageSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = saveOutputLanguage("English", "project-a")
+    await firstGetStarted.promise
+    const second = saveOutputLanguage("Chinese", "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterOutputLanguageSnapshot = undefined
+
+    await expect(loadOutputLanguage("project-a")).resolves.toBe("English")
+    await expect(loadOutputLanguage("project-b")).resolves.toBe("Chinese")
   })
 })
