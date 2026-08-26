@@ -43,6 +43,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 
 import {
   __projectStoreTest,
+  addToRecentProjects,
   getLastProject,
   getRecentProjects,
   loadOutputLanguage,
@@ -208,6 +209,36 @@ describe("removeFromRecentProjects durability", () => {
     getHooks.afterRecentSnapshot = undefined
 
     expect(await getRecentProjects()).toEqual([KEEP])
+  })
+})
+
+describe("recent-project addition serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    getHooks.afterRecentSnapshot = undefined
+  })
+
+  it("does not lose a project when two additions overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let recentGets = 0
+    getHooks.afterRecentSnapshot = async () => {
+      recentGets += 1
+      if (recentGets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = addToRecentProjects(GONE)
+    await firstGetStarted.promise
+    const second = addToRecentProjects(KEEP)
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterRecentSnapshot = undefined
+
+    expect(await getRecentProjects()).toEqual([KEEP, GONE])
   })
 })
 

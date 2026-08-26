@@ -34,11 +34,15 @@ export async function saveLastProject(project: WikiProject): Promise<void> {
 export async function addToRecentProjects(
   project: WikiProject
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-  const filtered = existing.filter((p) => p.path !== project.path)
-  const updated = [project, ...filtered].slice(0, 10)
-  await store.set(RECENT_PROJECTS_KEY, updated)
+  const write = recentProjectsWrite.then(async () => {
+    const store = await getStore()
+    const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+    const filtered = existing.filter((p) => p.path !== project.path)
+    const updated = [project, ...filtered].slice(0, 10)
+    await store.set(RECENT_PROJECTS_KEY, updated)
+  })
+  recentProjectsWrite = write.catch(() => {})
+  await write
 }
 
 const LLM_CONFIG_KEY = "llmConfig"
