@@ -1649,11 +1649,16 @@ function GeneratedOutputPreviewDialog({
   }, [onClose])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6">
-      <div className="flex h-[86vh] w-[80vw] min-w-0 max-w-[1600px] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="generated-output-preview-title"
+        className="flex h-[86vh] w-[80vw] min-w-0 max-w-[1600px] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl"
+      >
         <div className="flex min-h-12 items-center gap-3 border-b px-4 py-2">
           <Maximize2 className="h-4 w-4 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium" title={displayTitle}>{displayTitle}</div>
+            <div id="generated-output-preview-title" className="truncate text-sm font-medium" title={displayTitle}>{displayTitle}</div>
             <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={preview.path}>{preview.path}</div>
           </div>
           <button
