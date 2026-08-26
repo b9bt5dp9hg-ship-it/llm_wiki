@@ -9,6 +9,7 @@ import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { isImeComposing } from "@/lib/keyboard-utils"
 import { lightboxDialogAria, searchFieldAria, trapTabInContainer } from "./search-a11y"
+import { createSearchNavigationSession } from "@/lib/search-navigation-session"
 
 /**
  * One image hit displayed in the Images section.
@@ -42,12 +43,15 @@ export function SearchView() {
   // closes naturally when the user navigates away from search.
   const [lightbox, setLightbox] = useState<ImageHit | null>(null)
   const searchSessionRef = useRef(createSearchSession())
+  const navigationSessionRef = useRef(createSearchNavigationSession())
 
   useEffect(() => {
     searchSessionRef.current.invalidate()
+    navigationSessionRef.current.invalidate()
     setResults([])
     setSearching(false)
     setHasSearched(false)
+    return () => navigationSessionRef.current.invalidate()
   }, [project?.path])
 
   const doSearch = useCallback(
@@ -138,8 +142,10 @@ export function SearchView() {
 
   async function handleOpen(path: string) {
     try {
-      const content = await readFile(path)
-      openFileInPreview(path, content)
+      const outcome = await navigationSessionRef.current.open(path)
+      if (outcome.status === "applied") {
+        openFileInPreview(outcome.path, outcome.content)
+      }
     } catch (err) {
       console.error("Failed to open search result:", err)
     }
