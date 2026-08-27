@@ -26,6 +26,48 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.6.11",
+    date: "2026-08-25",
+    highlights: {
+      en: [
+        "Added configurable reasoning effort for Ingest tasks across supported models and providers.",
+        "Fixed Claude Code CLI provider tests by preserving local isolation settings and passing MCP configuration arguments correctly.",
+        "Made raw source file lists use consistent natural numeric ordering across the app.",
+        "Prevented stale raw source entries from appearing when switching projects.",
+        "Expanded source-build documentation and improved related tests, stability, and compatibility.",
+      ],
+      zh: [
+        "新增可配置的 Ingest 推理强度，并完善不同模型与 Provider 的适配。",
+        "修复 Claude Code CLI Provider 测试，保留本地隔离设置并正确传递 MCP 配置参数。",
+        "原始资料列表统一使用自然数字排序。",
+        "修复切换项目时可能短暂显示旧项目原始资料的问题。",
+        "补充源码构建文档，并完善相关测试、稳定性与兼容性。",
+      ],
+    },
+  },
+  {
+    version: "0.6.10",
+    date: "2026-08-21",
+    highlights: {
+      en: [
+        "Added source-based knowledge filtering.",
+        "Added batch Deep Research for review items and support for rerunning completed or failed research tasks.",
+        "Added support for MinerU 3.0-3.2 backend names and made image captions follow the configured output language.",
+        "Added detailed reporting for files skipped during source import.",
+        "Improved large duplicate scans and fixed Deep Research concurrency, file naming, vector indexing, and wikilink consistency.",
+        "Improved Agent model routing and provider compatibility, and fixed language detection, retry behavior, and Windows CRLF data integrity issues.",
+      ],
+      zh: [
+        "新增按原始资料来源筛选知识内容。",
+        "Review 支持批量执行深度研究，并可重新运行已完成或失败的研究任务。",
+        "支持 MinerU 3.0-3.2 后端名称，图片描述会遵循配置的输出语言。",
+        "文件导入新增跳过文件及具体原因的详细报告。",
+        "优化大规模重复文件扫描，并修复深度研究并发、文件命名、向量索引和 Wiki 链接一致性问题。",
+        "完善 Agent 模型路由与 Provider 兼容性，并修复语言误判、重试行为和 Windows CRLF 数据完整性问题。",
+      ],
+    },
+  },
+  {
     version: "0.6.9",
     date: "2026-08-14",
     highlights: {

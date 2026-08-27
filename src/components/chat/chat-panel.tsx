@@ -998,6 +998,7 @@ export function ChatPanel() {
           try {
             await invoke<string>("agent_start_turn_stream", {
               projectId: project?.id ?? "current",
+              llmConfig,
               request: {
                 message: text,
                 sessionId: convId,
@@ -1075,6 +1076,7 @@ export function ChatPanel() {
           }))
         const backendResponse = await invoke<BackendAgentResponse>("agent_start_turn", {
           projectId: project?.id ?? "current",
+          llmConfig,
           request: {
             message: text,
             sessionId: convId,

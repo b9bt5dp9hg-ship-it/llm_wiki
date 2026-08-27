@@ -317,6 +317,9 @@ function resolveCaptionConfig(
     azureApiVersion: mm.azureApiVersion,
     azureModelFamily: mm.azureModelFamily,
     apiMode: mm.apiMode,
+    // The dedicated caption provider has no separate reasoning control. Reuse
+    // the ingest preference and let its own provider capabilities normalize it.
+    ingestReasoning: mainLlm.ingestReasoning,
     // The caption helper hits `streamChat` directly, which doesn't
     // care about `maxContextSize` (that field is for the analysis
     // / generation prompt-truncation logic). Keep it set so the
@@ -331,6 +334,7 @@ import {
   loadProjectWikiSchemaRouting,
   validateWikiPageRouting,
 } from "@/lib/wiki-schema"
+import { resolveIngestReasoning } from "@/lib/reasoning-capabilities"
 
 // Legacy export kept for backward compatibility with existing diagnostic
 // tests. The live pipeline goes through parseFileBlocks() below, which
@@ -826,7 +830,13 @@ async function autoIngestImpl(
               )
             }
           }
-          await injectImagesIntoSourceSummary(pp, sourceIdentity, sourceSummarySlug, savedImages)
+          await injectImagesIntoSourceSummary(
+            pp,
+            sourceIdentity,
+            sourceSummarySlug,
+            savedImages,
+            getLanguagePromptName(getOutputLanguage(sourceContent)),
+          )
           // Re-embed the source-summary page so caption text lands
           // in the search index. Without this step, search by image
           // content stays empty for files ingested before captioning
@@ -1037,7 +1047,7 @@ async function autoIngestImpl(
         },
       },
       signal,
-      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
+      { temperature: 0.1, reasoning: resolveIngestReasoning(llmConfig), max_tokens: 4096 },
     )
   }
 
@@ -1094,7 +1104,7 @@ async function autoIngestImpl(
     signal,
     {
       temperature: 0.1,
-      reasoning: { mode: "off" },
+      reasoning: resolveIngestReasoning(llmConfig),
       max_tokens: computeIngestGenerationMaxTokens(llmConfig.maxContextSize),
     },
   )
@@ -1140,7 +1150,7 @@ async function autoIngestImpl(
         signal,
         {
           temperature: 0.1,
-          reasoning: { mode: "off" },
+          reasoning: resolveIngestReasoning(llmConfig),
           max_tokens: computeIngestReviewMaxTokens(llmConfig.maxContextSize),
         },
       )
@@ -1217,7 +1227,7 @@ async function autoIngestImpl(
         signal,
         {
           temperature: 0.1,
-          reasoning: { mode: "off" },
+          reasoning: resolveIngestReasoning(llmConfig),
           // A repair must regenerate the complete FILE body. Reusing the
           // smaller review budget can immediately truncate the same long page
           // that exhausted the original response.
@@ -1347,7 +1357,13 @@ async function autoIngestImpl(
   // want the safety-net section to slip image refs into the wiki
   // through the back door.
   if (mmCfg.enabled && savedImages.length > 0 && !signal?.aborted) {
-    await injectImagesIntoSourceSummary(pp, sourceIdentity, sourceSummarySlug, savedImages)
+    await injectImagesIntoSourceSummary(
+      pp,
+      sourceIdentity,
+      sourceSummarySlug,
+      savedImages,
+      getLanguagePromptName(getOutputLanguage(sourceContent)),
+    )
   }
 
   if (writtenPaths.length > 0) {
@@ -2935,7 +2951,7 @@ async function analyzeLongSourceInChunks(
         },
       },
       signal,
-      { temperature: 0.1, reasoning: { mode: "off" }, max_tokens: 4096 },
+      { temperature: 0.1, reasoning: resolveIngestReasoning(llmConfig), max_tokens: 4096 },
     )
 
     throwIfIngestAborted(signal, activityId)
@@ -3110,6 +3126,7 @@ async function injectImagesIntoSourceSummary(
   sourceIdentity: string,
   sourceSummarySlug: string,
   savedImages: { relPath: string; page: number | null; sha256?: string }[],
+  outputLanguage?: string,
 ): Promise<void> {
   if (savedImages.length === 0) return
   const sourceSummaryPath = `wiki/sources/${sourceSummarySlug}.md`
@@ -3123,7 +3140,7 @@ async function injectImagesIntoSourceSummary(
     // indexes whatever's in the wiki page, so without this, search
     // by image content (e.g. "find the chart with revenue data")
     // never matches because alt text was empty.
-    const captionsBySha = await loadCaptionCache(pp)
+    const captionsBySha = await loadCaptionCache(pp, outputLanguage)
     const newSection = buildImageMarkdownSection(
       savedImages.map((img) => ({
         ...img,
