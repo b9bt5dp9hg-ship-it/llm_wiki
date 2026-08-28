@@ -17,7 +17,10 @@ const DEFAULT_OVERLAP_CHARS: usize = 200;
 const MIN_CHUNK_CHARS: usize = 64;
 const MAX_CHUNK_CHARS: usize = 32_000;
 const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_PAGE_CHUNKS: usize = 512;
+// Rows are staged before the atomic LanceDB replacement, so retain a hard
+// allocation bound while allowing large, valid wiki pages to be indexed.
+// Source pages remain capped at 2 MiB and provider requests at 64 chunks.
+const MAX_PAGE_CHUNKS: usize = 2_048;
 const EMBEDDING_BATCH_SIZE: usize = 64;
 const PROVIDER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);
 const REVISION_DIR: &str = ".llm-wiki/embedding-revisions";
@@ -164,15 +167,7 @@ pub async fn embed_wiki_page(
             "Wiki page has no indexable content",
         ));
     }
-    if chunks.len() > MAX_PAGE_CHUNKS {
-        return Err(PageEmbeddingError::new(
-            PageEmbeddingErrorKind::InvalidRequest,
-            format!(
-                "Wiki page produces {} chunks, exceeding the {} chunk limit; increase maxChunkChars or split the page",
-                chunks.len(), MAX_PAGE_CHUNKS
-            ),
-        ));
-    }
+    validate_page_chunk_count(chunks.len())?;
 
     // Only provider work is cancellable. Once storage replacement starts, let
     // it complete so a timeout cannot remove the previous page index midway.
@@ -216,6 +211,18 @@ fn validate_embedding_rows(rows: &[ChunkUpsertInput]) -> Result<(), PageEmbeddin
         return Err(PageEmbeddingError::new(
             PageEmbeddingErrorKind::Provider,
             "Embedding provider returned empty or inconsistent vector dimensions",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_page_chunk_count(chunk_count: usize) -> Result<(), PageEmbeddingError> {
+    if chunk_count > MAX_PAGE_CHUNKS {
+        return Err(PageEmbeddingError::new(
+            PageEmbeddingErrorKind::InvalidRequest,
+            format!(
+                "Wiki page produces {chunk_count} chunks, exceeding the {MAX_PAGE_CHUNKS} chunk limit; increase maxChunkChars or split the page"
+            ),
         ));
     }
     Ok(())
@@ -744,6 +751,17 @@ mod tests {
         assert!(resolve_wiki_markdown_path(root.to_str().unwrap(), "outside.md").is_err());
         assert!(resolve_wiki_markdown_path(root.to_str().unwrap(), "wiki/missing.md").is_err());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn page_chunk_limit_accepts_boundary_and_rejects_overflow() {
+        assert_eq!(MAX_PAGE_CHUNKS, 2_048);
+        assert!(validate_page_chunk_count(MAX_PAGE_CHUNKS).is_ok());
+
+        let error = validate_page_chunk_count(MAX_PAGE_CHUNKS + 1).unwrap_err();
+        assert_eq!(error.kind, PageEmbeddingErrorKind::InvalidRequest);
+        assert!(error.message.contains("2049 chunks"));
+        assert!(error.message.contains("2048 chunk limit"));
     }
 
     #[test]
