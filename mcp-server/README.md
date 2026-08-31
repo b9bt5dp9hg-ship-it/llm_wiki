@@ -62,6 +62,10 @@ When API unauthenticated mode is enabled, omit `LLM_WIKI_API_TOKEN`. If MCP acce
 - `llm_wiki_chat`: ask the backend Agent chat endpoint and receive answer text, references, usage, and tool events. `mode: deep` broadens backend evidence collection; full Deep Research workflows still live in the desktop app.
 - `llm_wiki_graph`: query the app's knowledge graph endpoint.
 - `llm_wiki_rescan_sources`: trigger a Source Watch rescan using the user's configured rules.
+- `llm_wiki_embed_page`: start indexing one `wiki/*.md` page asynchronously and return a job ID immediately, including for very large pages.
+- `llm_wiki_embedding_status`: poll that job ID until its status is `completed` or `failed`; completed jobs include the final embedding result.
+
+Embedding jobs are retained in the MCP process and coalesced by project and page while running. A `force: true` request made while an unforced job for that page is active deliberately joins the active job; start a new forced job after it completes if a second rebuild is still needed. If the MCP process restarts or a job expires, call `llm_wiki_embed_page` again; a page that already finished indexing returns `unchanged` through the new job.
 
 ## Security model
 
