@@ -19,7 +19,8 @@ const MAX_PHRASE_OCC_COUNTED: usize = 10;
 const TITLE_TOKEN_WEIGHT: f64 = 5.0;
 const CONTENT_TOKEN_WEIGHT: f64 = 1.0;
 const SNIPPET_CONTEXT: usize = 80;
-const SEARCH_EMBEDDING_TIMEOUT_SECS: u64 = 8;
+const REMOTE_EMBEDDING_TIMEOUT_SECS: u64 = 8;
+const LOCAL_EMBEDDING_TIMEOUT_SECS: u64 = 60;
 const MAX_SEARCH_FILES: usize = 10_000;
 const MIN_GRAPH_RESULT_RATIO: f64 = 0.15;
 const MAX_GRAPH_RESULT_RATIO: f64 = 0.30;
@@ -1112,9 +1113,7 @@ pub(crate) async fn fetch_embedding_batch(
 
     let endpoint = volcengine_embedding_endpoint(cfg);
     let mut req = crate::proxy::configure_http_client(reqwest::Client::builder())
-        .timeout(std::time::Duration::from_secs(
-            SEARCH_EMBEDDING_TIMEOUT_SECS,
-        ))
+        .timeout(embedding_request_timeout(&endpoint))
         .build()
         .map_err(|e| format!("Embedding HTTP client error: {e}"))?
         .post(&endpoint)
@@ -1245,9 +1244,7 @@ async fn fetch_embedding_once(
         volcengine_embedding_endpoint(cfg)
     };
     let mut req = crate::proxy::configure_http_client(reqwest::Client::builder())
-        .timeout(std::time::Duration::from_secs(
-            SEARCH_EMBEDDING_TIMEOUT_SECS,
-        ))
+        .timeout(embedding_request_timeout(&endpoint))
         .build()
         .map_err(|e| EmbeddingFetchError::Other(format!("Embedding HTTP client error: {e}")))?
         .post(&endpoint)
@@ -1437,6 +1434,15 @@ fn is_local_or_private_http_endpoint(endpoint: &str) -> bool {
         || (octets[0] == 172 && (16..=31).contains(&octets[1]))
         || (octets[0] == 192 && octets[1] == 168)
         || octets[0] == 127
+}
+
+fn embedding_request_timeout(endpoint: &str) -> std::time::Duration {
+    let seconds = if is_local_or_private_http_endpoint(endpoint) {
+        LOCAL_EMBEDDING_TIMEOUT_SECS
+    } else {
+        REMOTE_EMBEDDING_TIMEOUT_SECS
+    };
+    std::time::Duration::from_secs(seconds)
 }
 
 fn is_volcengine_embedding_endpoint(endpoint: &str) -> bool {
@@ -1913,6 +1919,18 @@ mod tests {
         assert!(!is_local_or_private_http_endpoint(
             "https://api.openai.com/v1/embeddings"
         ));
+    }
+
+    #[test]
+    fn local_embedding_timeout_allows_cold_starts_and_large_response_bodies() {
+        assert_eq!(
+            embedding_request_timeout("http://127.0.0.1:11434/v1/embeddings"),
+            std::time::Duration::from_secs(LOCAL_EMBEDDING_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            embedding_request_timeout("https://api.openai.com/v1/embeddings"),
+            std::time::Duration::from_secs(REMOTE_EMBEDDING_TIMEOUT_SECS)
+        );
     }
 
     #[test]
