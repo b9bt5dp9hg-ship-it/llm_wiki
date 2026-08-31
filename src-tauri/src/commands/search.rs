@@ -103,6 +103,8 @@ pub struct SearchEmbeddingConfig {
     pub max_chunk_chars: Option<usize>,
     #[serde(default)]
     pub overlap_chunk_chars: Option<usize>,
+    #[serde(default)]
+    pub batch_size: Option<usize>,
 }
 
 #[tauri::command]
@@ -1883,6 +1885,7 @@ mod tests {
             extra_headers: None,
             max_chunk_chars: None,
             overlap_chunk_chars: None,
+            batch_size: None,
         };
 
         let endpoint = google_embedding_endpoint(&cfg);
@@ -1907,6 +1910,7 @@ mod tests {
             extra_headers: None,
             max_chunk_chars: None,
             overlap_chunk_chars: None,
+            batch_size: None,
         };
         assert_eq!(
             volcengine_embedding_endpoint(&cfg),
@@ -1935,6 +1939,7 @@ mod tests {
             extra_headers: None,
             max_chunk_chars: None,
             overlap_chunk_chars: None,
+            batch_size: None,
         };
 
         assert_eq!(
@@ -1960,6 +1965,7 @@ mod tests {
             extra_headers: None,
             max_chunk_chars: None,
             overlap_chunk_chars: None,
+            batch_size: None,
         };
         assert_eq!(
             volcengine_embedding_endpoint(&cfg),
@@ -1997,6 +2003,7 @@ mod tests {
             extra_headers: None,
             max_chunk_chars: None,
             overlap_chunk_chars: None,
+            batch_size: None,
         };
 
         assert!(is_doubao_multimodal_embedding_config(&cfg));
@@ -2467,5 +2474,19 @@ mod tests {
         assert!(parse_embedding_batch_values(&response, 2)
             .unwrap_err()
             .contains("duplicate"));
+    }
+
+    #[test]
+    fn embedding_config_deserializes_the_ui_batch_size() {
+        let config: SearchEmbeddingConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "endpoint": "http://127.0.0.1:11434/v1/embeddings",
+            "apiKey": "",
+            "model": "nomic-embed-text",
+            "batchSize": 8
+        }))
+        .unwrap();
+
+        assert_eq!(config.batch_size, Some(8));
     }
 }
