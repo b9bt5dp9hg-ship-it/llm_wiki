@@ -455,7 +455,7 @@ LLM Wiki ships a built-in local HTTP API at `http://127.0.0.1:19828` (token-prot
 
 Enable the API, generate a token, and choose whether local unauthenticated access is allowed in **Settings → API + MCP**.
 
-For MCP-compatible clients, LLM Wiki also includes a local MCP server in `mcp-server/`. After building it with `npm run mcp:build`, **Settings → API + MCP** shows a copyable MCP client configuration with the correct local path for your machine. The MCP tools call the same API surface, so agent clients can list projects, read files, export unresolved Review items, run hybrid search, inspect the graph, trigger source rescans, and call the same Rust backend Agent chat endpoint without custom HTTP glue code.
+For MCP-compatible clients, LLM Wiki also includes a local MCP server in `mcp-server/`. After building it with `npm run mcp:build`, **Settings → API + MCP** shows a copyable MCP client configuration with the correct local path for your machine. The MCP tools call the same API surface, so agent clients can list projects, read files, export unresolved Review items, run hybrid search, inspect the graph, trigger source rescans, and call the same Rust backend Agent chat endpoint without custom HTTP glue code. Page embedding starts asynchronously through `llm_wiki_embed_page`; poll the returned job ID with `llm_wiki_embedding_status` so large pages can finish beyond a single MCP request deadline.
 
 ### Plug your AI agent in with one command
 

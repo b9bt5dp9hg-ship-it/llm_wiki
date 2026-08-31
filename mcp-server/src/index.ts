@@ -20,6 +20,7 @@ import {
 } from "./api-client.js"
 import { VERSION } from "./version.js"
 import { McpProjectBinding, withActiveProject } from "./project-binding.js"
+import { EmbeddingJobStore } from "./embedding-jobs.js"
 import {
   buildGraphOffline,
   findOfflineProject,
@@ -38,6 +39,7 @@ const OFFLINE_PREFIX = "[offline fallback — desktop app not running; served fr
 
 const client = new LlmWikiApiClient()
 const projectBinding = new McpProjectBinding()
+const embeddingJobs = new EmbeddingJobStore()
 
 const server = new Server(
   { name: "llm-wiki", version: VERSION },
@@ -184,7 +186,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "llm_wiki_embed_page",
-      description: "Create or replace the vector index for one existing Markdown page under a project's wiki/ directory.",
+      description: "Start creating or replacing the vector index for one existing Markdown page under a project's wiki/ directory. The job continues asynchronously so large pages do not exceed the MCP request deadline. Poll llm_wiki_embedding_status with the returned jobId until it completes.",
       inputSchema: {
         type: "object",
         properties: {
@@ -193,6 +195,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           force: { type: "boolean", description: "Force rebuilding vectors even when the page content and embedding configuration are unchanged." },
         },
         required: ["path"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "llm_wiki_embedding_status",
+      description: "Poll an asynchronous page-embedding job started by llm_wiki_embed_page. Completed jobs include the final embedding result; failed jobs include the error.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: { type: "string", description: "Job identifier returned by llm_wiki_embed_page." },
+        },
+        required: ["job_id"],
         additionalProperties: false,
       },
     },
@@ -364,8 +378,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await assertMcpEnabled()
         const path = stringArg(args.path, "path")
         const scope = await resolveProjectScope(args)
-        const result = await client.embedPage(path, scope.id, boolArg(args.force, false))
-        return textResult(withActiveProject(JSON.stringify(result, null, 2), scope.project, scope.id))
+        const force = boolArg(args.force, false)
+        const job = embeddingJobs.start(
+          scope.id,
+          path,
+          force,
+          () => client.embedPage(path, scope.id, force),
+        )
+        return textResult(withActiveProject(JSON.stringify(job, null, 2), scope.project, scope.id))
+      }
+      case "llm_wiki_embedding_status": {
+        const jobId = stringArg(args.job_id, "job_id")
+        const job = embeddingJobs.get(jobId)
+        if (!job) {
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            "Unknown or expired embedding job. Call llm_wiki_embed_page again; an already indexed page will complete quickly as unchanged.",
+          )
+        }
+        return textResult(JSON.stringify(job, null, 2))
       }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`)
