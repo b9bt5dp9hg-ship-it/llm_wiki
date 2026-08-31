@@ -21,7 +21,7 @@ const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 // allocation bound while allowing large, valid wiki pages to be indexed.
 // Source pages remain capped at 2 MiB and provider requests at 64 chunks.
 const MAX_PAGE_CHUNKS: usize = 2_048;
-const EMBEDDING_BATCH_SIZE: usize = 64;
+const MAX_EMBEDDING_BATCH_SIZE: usize = 64;
 const PROVIDER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);
 const REVISION_DIR: &str = ".llm-wiki/embedding-revisions";
 
@@ -237,7 +237,7 @@ async fn prepare_embedding_rows(
     // failure therefore leaves the previous, known-good page index intact.
     let mut rows = Vec::with_capacity(chunks.len());
     if supports_embedding_batch(&config) {
-        for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
+        for batch in chunks.chunks(embedding_batch_size(config)) {
             let texts = batch
                 .iter()
                 .map(|chunk| enrich_chunk(&title, chunk))
@@ -265,6 +265,13 @@ async fn prepare_embedding_rows(
         }
     }
     Ok(rows)
+}
+
+fn embedding_batch_size(config: &SearchEmbeddingConfig) -> usize {
+    config
+        .batch_size
+        .unwrap_or(1)
+        .clamp(1, MAX_EMBEDDING_BATCH_SIZE)
 }
 
 fn chunk_row(index: usize, chunk: &MarkdownChunk, embedding: Vec<f32>) -> ChunkUpsertInput {
@@ -735,7 +742,23 @@ mod tests {
             extra_headers: Some(BTreeMap::from([("X-Route".to_string(), "a".to_string())])),
             max_chunk_chars: Some(1_000),
             overlap_chunk_chars: Some(200),
+            batch_size: None,
         }
+    }
+
+    #[test]
+    fn page_embedding_uses_the_configured_provider_batch_size() {
+        let mut config = embedding_config("model-a");
+        assert_eq!(embedding_batch_size(&config), 1);
+
+        config.batch_size = Some(8);
+        assert_eq!(embedding_batch_size(&config), 8);
+
+        config.batch_size = Some(0);
+        assert_eq!(embedding_batch_size(&config), 1);
+
+        config.batch_size = Some(usize::MAX);
+        assert_eq!(embedding_batch_size(&config), MAX_EMBEDDING_BATCH_SIZE);
     }
 
     #[test]
