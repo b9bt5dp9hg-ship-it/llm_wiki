@@ -107,7 +107,7 @@ export function findSurprisingConnections(
 
 /**
  * Detect knowledge gaps based on graph structure:
- * - Isolated nodes (degree ≤ 1)
+ * - Isolated nodes (degree 0)
  * - Sparse communities (cohesion < 0.15 with ≥ 3 nodes)
  * - Bridge nodes (high betweenness — connected to multiple communities)
  */
@@ -120,9 +120,19 @@ export function detectKnowledgeGaps(
   const gaps: KnowledgeGap[] = []
   const nodeMap = new Map(nodes.map((n) => [n.id, n]))
 
-  // 1. Isolated nodes (degree ≤ 1, exclude overview/index)
+  // Use actual graph endpoints: cached link counts can describe an older graph.
+  // A set also makes repeated edges irrelevant to zero-degree detection.
+  const connectedNodeIds = new Set<string>()
+  for (const edge of edges) {
+    if (nodeMap.has(edge.source) && nodeMap.has(edge.target)) {
+      connectedNodeIds.add(edge.source)
+      connectedNodeIds.add(edge.target)
+    }
+  }
+
+  // 1. Isolated nodes (degree 0, exclude overview/index/log)
   const isolatedNodes = nodes.filter(
-    (n) => n.linkCount <= 1 && n.type !== "overview" && n.id !== "index" && n.id !== "log",
+    (n) => !connectedNodeIds.has(n.id) && n.type !== "overview" && n.id !== "index" && n.id !== "log",
   )
   if (isolatedNodes.length > 0) {
     const topIsolated = isolatedNodes.slice(0, 5)
@@ -132,7 +142,7 @@ export function detectKnowledgeGaps(
       description: topIsolated.map((n) => n.label).join(", ") +
         (isolatedNodes.length > 5 ? ` and ${isolatedNodes.length - 5} more` : ""),
       nodeIds: isolatedNodes.map((n) => n.id),
-      suggestion: "These pages have few or no connections. Consider adding [[wikilinks]] to related pages, or research to expand their content.",
+      suggestion: "These pages have no connections. Consider adding [[wikilinks]] to related pages, or research to expand their content.",
     })
   }
 

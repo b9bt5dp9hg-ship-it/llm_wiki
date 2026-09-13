@@ -19,7 +19,7 @@ export interface FrontmatterParseResult {
 // Strict, anchored detector. Both fence lines must be on their own
 // line; content between is delegated to js-yaml. Used as the first
 // step before falling back to the locator below.
-const FM_BLOCK_STRICT_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/
+const FM_BLOCK_STRICT_RE = /^\uFEFF?---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/
 
 // Same shape as STRICT but unanchored — used only when STRICT
 // failed. LLM-generated pages often prepend an extra line or two

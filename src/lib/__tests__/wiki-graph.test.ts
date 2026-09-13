@@ -28,6 +28,119 @@ function mdFile(name: string): FileNode {
 }
 
 describe("buildWikiGraph frontmatter extraction", () => {
+  it("links path, filename, Unicode and related references to existing pages once", async () => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["source.md", '---\nrelated: ["target.md", "wiki/concepts/äpfel.md#Details", "query"]\n---\n# Source\n[[concepts/target]] [[target.md|Again]] [[a\u0308pfel]] [[missing/target.md]] [[query]] [[source]]'],
+      ["concepts/target.md", "# Target\n[[source]]"],
+      ["concepts/äpfel.md", "# Apples"],
+      ["query.md", "---\ntype: query\n---\n[[source]]"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map((path) => ({
+      name: path.split("/").pop()!, path: `/project/wiki/${path}`, is_dir: false,
+    })))
+    mockReadFile.mockImplementation(async (path: string) => pages.get(path.replace("/project/wiki/", ""))!)
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.nodes).toHaveLength(3)
+    expect(graph.edges).toHaveLength(2)
+    const byId = new Map(graph.nodes.map((node) => [node.id, node]))
+    expect(byId.get("source")?.linkCount).toBe(2)
+    expect(byId.get("target")?.linkCount).toBe(1)
+    expect(byId.get("äpfel")?.linkCount).toBe(1)
+  })
+
+  it("retains duplicate basenames and resolves only their explicit paths", async () => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["source.md", "# Source\n[[dup]] [[wiki/a/dup.md]] [[b/dup#Details]] [[wrong/dup.md]]"],
+      ["a/dup.md", "# First"],
+      ["b/dup.md", "# Second"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map((path) => ({
+      name: path.split("/").pop()!, path: `/project/wiki/${path}`, is_dir: false,
+    })))
+    mockReadFile.mockImplementation(async (path: string) => pages.get(path.replace("/project/wiki/", ""))!)
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.nodes.map((node) => node.id).sort()).toEqual(["a/dup", "b/dup", "source"])
+    expect(graph.edges).toHaveLength(2)
+    expect(graph.nodes.find((node) => node.id === "source")?.linkCount).toBe(2)
+  })
+
+  it.each(["query", "unreadable"])("keeps reader ambiguity and page identities when a duplicate is %s", async (hiddenKind) => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["bare.md", "# Bare\n[[dup]]"],
+      ["explicit.md", "# Explicit\n[[concepts/dup]] [[queries/dup]]"],
+      ["concepts/dup.md", "# Concept"],
+      ["queries/dup.md", "---\ntype: query\n---\n# Query\n[[bare]]"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map((path) => ({
+      name: path.split("/").pop()!, path: `/project/wiki/${path}`, is_dir: false,
+    })))
+    mockReadFile.mockImplementation(async (path: string) => {
+      if (hiddenKind === "unreadable" && path.endsWith("/queries/dup.md")) throw new Error("Cannot read page")
+      return pages.get(path.replace("/project/wiki/", ""))!
+    })
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.nodes.map((node) => node.id).sort()).toEqual(["bare", "concepts/dup", "explicit"])
+    expect(graph.edges).toEqual([
+      expect.objectContaining({ source: "explicit", target: "concepts/dup" }),
+    ])
+    expect(graph.nodes.find((node) => node.id === "bare")?.linkCount).toBe(0)
+  })
+
+  it("preserves related-only relationships without inventing semantic or markdown edges", async () => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["source.md", "---\nrelated:\n  - target\n---\n# Source\n[same theme](unlinked.md)"],
+      ["target.md", "# Target"],
+      ["unlinked.md", "# Same theme"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map(mdFile))
+    mockReadFile.mockImplementation(async (path: string) => pages.get(path.replace("/project/wiki/", ""))!)
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.edges).toEqual([expect.objectContaining({ source: "source", target: "target" })])
+    expect(graph.nodes.find((node) => node.id === "unlinked")?.linkCount).toBe(0)
+  })
+
+  it("uses BOM-prefixed related metadata and excludes BOM-prefixed query pages", async () => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["source.md", "\uFEFF---\nrelated: [target]\n---\n# Source"],
+      ["target.md", "# Target"],
+      ["query.md", "\uFEFF---\r\ntype: query\r\nrelated: [target]\r\n---\r\n# Query"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map(mdFile))
+    mockReadFile.mockImplementation(async (path: string) => pages.get(path.replace("/project/wiki/", ""))!)
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.nodes.map((node) => node.id)).toEqual(["source", "target"])
+    expect(graph.edges).toEqual([expect.objectContaining({ source: "source", target: "target" })])
+  })
+
+  it("ignores non-string related metadata without discarding quoted numeric slugs", async () => {
+    const buildWikiGraph = await loadBuildWikiGraph()
+    const pages = new Map([
+      ["source.md", '---\nrelated: [123, true, {target: foo}, "456"]\n---\n# Source'],
+      ["123.md", "# Number"], ["true.md", "# Boolean"], ["456.md", "# Quoted slug"],
+    ])
+    mockListDirectory.mockResolvedValue([...pages.keys()].map(mdFile))
+    mockReadFile.mockImplementation(async (path: string) => pages.get(path.replace("/project/wiki/", ""))!)
+
+    const graph = await buildWikiGraph("/project")
+
+    expect(graph.edges).toEqual([expect.objectContaining({ source: "source", target: "456" })])
+  })
+
   it("does not read a title: line from the document body as the frontmatter title", async () => {
     const buildWikiGraph = await loadBuildWikiGraph()
     mockListDirectory.mockResolvedValue([mdFile("page.md")])
@@ -111,7 +224,7 @@ describe("buildWikiGraph frontmatter extraction", () => {
       path.endsWith("source.md") ? "# Source\n\n[[foo]]" : "# Target",
     )
 
-    const graph = await buildWikiGraph("/case-project")
+    const graph = await buildWikiGraph("/project")
 
     expect(graph.edges).toEqual([
       expect.objectContaining({ source: "source", target: "foo" }),
@@ -122,7 +235,7 @@ describe("buildWikiGraph frontmatter extraction", () => {
     const buildWikiGraph = await loadBuildWikiGraph()
     mockListDirectory.mockClear()
     mockReadFile.mockClear()
-    mockListDirectory.mockResolvedValue([mdFile("cached.md")])
+    mockListDirectory.mockResolvedValue([{ name: "cached.md", path: "/cached-project/wiki/cached.md", is_dir: false }])
     mockReadFile.mockResolvedValue("# Cached")
 
     const first = await buildWikiGraph("/cached-project", 42)

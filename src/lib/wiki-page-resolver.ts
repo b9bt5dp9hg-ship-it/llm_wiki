@@ -1,4 +1,5 @@
 import type { FileNode } from "@/types/wiki"
+import { buildWikiLinkIndex, resolveWikiLink, type WikiLinkIndex } from "./wiki-link-resolver"
 
 export interface ProjectPathIndexEntry {
   name: string
@@ -105,32 +106,26 @@ export function findInTreeByName(
   return null
 }
 
-/**
- * Resolve a `related:` reference to an absolute wiki page path.
- * Accepts three shapes the wiki has historically written:
- *   1. project-relative path:  `wiki/entities/dpao.md`
- *   2. bare filename with .md: `dpao.md`
- *   3. bare slug:              `dpao`
- * Returns the absolute path of an existing file, or null if none
- * matches. Always restricts the lookup to `wiki/` to avoid pulling
- * in a same-named file from `raw/sources/`.
- */
+const wikiLinkIndexes = new WeakMap<ProjectPathIndex, Map<string, WikiLinkIndex>>()
+
+/** Resolve a reader/related reference with the same page rules as the graph. */
 export function resolveRelatedSlug(
   index: ProjectPathIndex,
   ref: string,
   wikiRoot: string,
 ): string | null {
-  // Path-like → resolve relative to project root (one segment up
-  // from wikiRoot).
-  if (ref.includes("/")) {
-    const projectRoot = wikiRoot.replace(/\/wiki$/, "")
-    const target = `${projectRoot}/${ref}`
-    const found = findInTreeByPath(index, target)
-    return found && found.includes(`${wikiRoot}/`) ? found : null
+  let projectIndexes = wikiLinkIndexes.get(index)
+  if (!projectIndexes) {
+    projectIndexes = new Map()
+    wikiLinkIndexes.set(index, projectIndexes)
   }
-
-  const filename = ref.endsWith(".md") ? ref : `${ref}.md`
-  return findInTreeByName(index, filename, `${wikiRoot}/`)
+  let links = projectIndexes.get(wikiRoot)
+  if (!links) {
+    const paths = Array.from(index.filesByName.values()).flatMap((entries) => entries.map((entry) => entry.path))
+    links = buildWikiLinkIndex(paths, wikiRoot)
+    projectIndexes.set(wikiRoot, links)
+  }
+  return resolveWikiLink(links, ref)?.path ?? null
 }
 
 /**

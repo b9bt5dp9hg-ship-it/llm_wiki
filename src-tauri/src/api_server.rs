@@ -19,6 +19,12 @@ use walkdir::WalkDir;
 use crate::cors::{local_cors_headers, request_origin};
 use crate::{agent, clip_server, commands, server_bind};
 
+#[path = "wiki_graph_links.rs"]
+mod wiki_graph_links;
+use wiki_graph_links::{
+    build_graph_pages, retain_edges_and_recount, ApiGraphEdge, ApiGraphNode, GraphPage,
+};
+
 const PORT: u16 = 19828;
 const API_PREFIX: &str = "/api/v1";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -2354,24 +2360,6 @@ fn load_agent_runtime_config(app: &AppHandle, project_id: Option<&str>) -> Agent
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiGraphNode {
-    id: String,
-    label: String,
-    node_type: String,
-    path: String,
-    link_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiGraphEdge {
-    source: String,
-    target: String,
-    weight: f64,
-}
-
 fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
     let project = match resolve_project(app, project_id) {
         Ok(project) => project,
@@ -2388,6 +2376,7 @@ fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
 
     match build_graph(&project.path) {
         Ok((mut nodes, edges)) => {
+            let total_node_count = nodes.len();
             if let Some(ref q) = q {
                 nodes.retain(|n| {
                     n.id.to_lowercase().contains(q) || n.label.to_lowercase().contains(q)
@@ -2396,13 +2385,14 @@ fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
             if let Some(ref node_type) = node_type {
                 nodes.retain(|n| n.node_type == *node_type);
             }
+            let matched_node_count = nodes.len();
             nodes.truncate(limit);
-            let ids: BTreeSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
-            let edges: Vec<ApiGraphEdge> = edges
-                .into_iter()
-                .filter(|e| ids.contains(&e.source) && ids.contains(&e.target))
-                .collect();
-            ok(json!({ "ok": true, "projectId": project.id, "nodes": nodes, "edges": edges }))
+            let truncated = nodes.len() < matched_node_count;
+            let edges = retain_edges_and_recount(&mut nodes, edges);
+            ok(
+                json!({ "ok": true, "projectId": project.id, "nodes": nodes, "edges": edges,
+                "totalNodeCount": total_node_count, "matchedNodeCount": matched_node_count, "truncated": truncated }),
+            )
         }
         Err(e) => err(500, e),
     }
@@ -2410,114 +2400,30 @@ fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
 
 fn build_graph(project_path: &str) -> Result<(Vec<ApiGraphNode>, Vec<ApiGraphEdge>), String> {
     let wiki_root = Path::new(project_path).join("wiki");
-    let mut raw: BTreeMap<String, (String, String, String, Vec<String>)> = BTreeMap::new();
+    let mut pages = Vec::new();
     for entry in WalkDir::new(&wiki_root).into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file()
             || entry.path().extension().and_then(|s| s.to_str()) != Some("md")
         {
             continue;
         }
-        let content = match fs::read_to_string(entry.path()) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let id = entry
-            .path()
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if id.is_empty() {
-            continue;
-        }
-        let title =
-            commands::search::extract_title(&content, entry.file_name().to_string_lossy().as_ref());
-        let node_type = extract_type(&content);
-        let path = relative_to_project(project_path, entry.path());
-        let links = extract_wikilinks(&content);
-        raw.insert(id, (title, node_type, path, links));
-    }
-    let ids: BTreeSet<String> = raw.keys().cloned().collect();
-    let mut link_count: BTreeMap<String, usize> = raw.keys().map(|id| (id.clone(), 0)).collect();
-    let mut seen = BTreeSet::new();
-    let mut edges = Vec::new();
-    for (source, (_, _, _, links)) in &raw {
-        for link in links {
-            let Some(target) = resolve_link(link, &ids) else {
-                continue;
-            };
-            if &target == source {
-                continue;
-            }
-            let key = if source < &target {
-                format!("{source}::{target}")
-            } else {
-                format!("{target}::{source}")
-            };
-            if seen.insert(key) {
-                *link_count.entry(source.clone()).or_default() += 1;
-                *link_count.entry(target.clone()).or_default() += 1;
-                edges.push(ApiGraphEdge {
-                    source: source.clone(),
-                    target,
-                    weight: 1.0,
-                });
-            }
-        }
-    }
-    let nodes = raw
-        .into_iter()
-        .filter(|(_, (_, node_type, _, _))| node_type != "query")
-        .map(|(id, (label, node_type, path, _))| ApiGraphNode {
-            link_count: *link_count.get(&id).unwrap_or(&0),
-            id,
+        let content = fs::read_to_string(entry.path()).ok();
+        let label = content
+            .as_deref()
+            .map(|content| {
+                commands::search::extract_title(
+                    content,
+                    entry.file_name().to_string_lossy().as_ref(),
+                )
+            })
+            .unwrap_or_default();
+        pages.push(GraphPage {
+            path: relative_to_project(project_path, entry.path()),
             label,
-            node_type,
-            path,
-        })
-        .collect();
-    Ok((nodes, edges))
-}
-
-fn extract_type(content: &str) -> String {
-    for line in content.lines() {
-        if let Some(value) = line.trim().strip_prefix("type:") {
-            return value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_lowercase();
-        }
+            content,
+        });
     }
-    "other".to_string()
-}
-
-fn extract_wikilinks(content: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = content;
-    while let Some(start) = rest.find("[[") {
-        rest = &rest[start + 2..];
-        let Some(end) = rest.find("]]") else {
-            break;
-        };
-        let inner = &rest[..end];
-        let target = inner.split('|').next().unwrap_or("").trim();
-        if !target.is_empty() {
-            out.push(target.to_string());
-        }
-        rest = &rest[end + 2..];
-    }
-    out
-}
-
-fn resolve_link(raw: &str, ids: &BTreeSet<String>) -> Option<String> {
-    if ids.contains(raw) {
-        return Some(raw.to_string());
-    }
-    let normalized = raw.to_lowercase().replace(' ', "-");
-    ids.iter()
-        .find(|id| id.to_lowercase() == normalized || id.to_lowercase() == raw.to_lowercase())
-        .cloned()
+    Ok(build_graph_pages(pages))
 }
 
 fn handle_rescan(app: &AppHandle, project_id: &str) -> ApiResponse {
@@ -2589,6 +2495,125 @@ mod tests {
         let path = std::env::temp_dir().join(format!("llm-wiki-api-test-{id}-{seq}"));
         fs::create_dir_all(path.join("wiki")).unwrap();
         path
+    }
+
+    fn graph_fixture(pages: &[(&str, &str)]) -> (Vec<ApiGraphNode>, Vec<ApiGraphEdge>) {
+        let root = test_project_dir();
+        for (path, content) in pages {
+            let target = root.join("wiki").join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, content).unwrap();
+        }
+        let result = build_graph(root.to_str().unwrap());
+        fs::remove_dir_all(root).unwrap();
+        result.unwrap()
+    }
+
+    #[test]
+    fn graph_resolves_existing_page_paths_extensions_aliases_and_fragments() {
+        for target in [
+            "ziel",
+            "ziel.md",
+            "concepts/ziel",
+            "concepts/ziel.md",
+            "wiki/concepts/ziel.md",
+            "concepts/ziel.md#Abschnitt|Anzeige",
+            "wiki\\concepts\\ziel.md",
+            "concepts/./ziel",
+        ] {
+            let source = format!("---\ntype: concept\n---\n[[{target}]]");
+            let (nodes, edges) = graph_fixture(&[
+                ("entities/start.md", &source),
+                ("concepts/ziel.md", "---\ntype: concept\n---\n# Ziel"),
+            ]);
+            assert_eq!(edges.len(), 1, "existing target {target}");
+            assert!(nodes.iter().all(|node| node.link_count == 1));
+        }
+    }
+
+    #[test]
+    fn graph_normalizes_unicode_and_preserves_case_and_space_fallbacks() {
+        for target in ["gru\u{0308}ne-seite", "GRÜNE-SEITE", "Grüne Seite"] {
+            let source = format!("[[{target}]]");
+            let (_, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("concepts/grüne-seite.md", "# Seite"),
+            ]);
+            assert_eq!(edges.len(), 1, "normalized target {target}");
+        }
+    }
+
+    #[test]
+    fn graph_related_accepts_yaml_sequences_and_ignores_non_string_items() {
+        for frontmatter in [
+            "related:\n  - ziel\n  - 'concepts/zweite.md'\n  - ziel\n",
+            "related: [ziel, \"concepts/zweite.md\", ziel, 7, {target: falsch}]\n",
+        ] {
+            let source = format!("---\ntype: concept\n{frontmatter}---\n# Start");
+            let (nodes, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("concepts/ziel.md", "# Ziel"),
+                ("concepts/zweite.md", "# Zweite"),
+                ("concepts/falsch.md", "# Falsch"),
+            ]);
+            assert_eq!(edges.len(), 2);
+            assert_eq!(
+                nodes
+                    .iter()
+                    .find(|node| node.id == "start")
+                    .unwrap()
+                    .link_count,
+                2
+            );
+            assert_eq!(
+                nodes
+                    .iter()
+                    .find(|node| node.id == "falsch")
+                    .unwrap()
+                    .link_count,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn graph_excludes_query_nodes_before_edges_and_degrees() {
+        let (nodes, edges) = graph_fixture(&[
+            ("sichtbar.md", "[[frage]]"),
+            ("frage.md", "---\ntype: query\n---\n[[sichtbar]]"),
+        ]);
+        assert_eq!(nodes.len(), 1);
+        assert!(edges.is_empty());
+        assert_eq!(nodes[0].link_count, 0);
+    }
+
+    #[test]
+    fn graph_preserves_duplicate_stems_and_requires_unambiguous_targets() {
+        let (nodes, edges) = graph_fixture(&[
+            ("start.md", "[[dup]] [[concepts/dup]] [[entities/dup.md]]"),
+            ("concepts/dup.md", "# Concept"),
+            ("entities/dup.md", "# Entity"),
+        ]);
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().any(|node| node.id == "concepts/dup"));
+        assert!(nodes.iter().any(|node| node.id == "entities/dup"));
+        assert_eq!(edges.len(), 2);
+
+        let (_, ambiguous) = graph_fixture(&[
+            ("start.md", "[[dup]]"),
+            ("concepts/dup.md", "# Concept"),
+            ("entities/dup.md", "# Entity"),
+        ]);
+        assert!(ambiguous.is_empty());
+    }
+
+    #[test]
+    fn graph_explicit_missing_or_external_paths_never_fall_back_to_a_basename() {
+        let (_, edges) = graph_fixture(&[
+            ("start.md", "[[wrong/ziel]] [[../ziel]] [[wiki/../ziel]] [[/ziel]] [[https://example.test/ziel]] [[OtherProject/wiki/ziel]]"),
+            ("concepts/ziel.md", "# Ziel"),
+        ]);
+        assert!(edges.is_empty());
     }
 
     #[test]
