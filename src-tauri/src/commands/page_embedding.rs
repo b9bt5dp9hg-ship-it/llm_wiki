@@ -22,7 +22,10 @@ const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
 // Source pages remain capped at 2 MiB and provider requests at 64 chunks.
 const MAX_PAGE_CHUNKS: usize = 2_048;
 const MAX_EMBEDDING_BATCH_SIZE: usize = 64;
-const PROVIDER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);
+// Large pages may require thousands of sequential requests. Keep a stalled
+// request bounded separately from the total time allowed for a progressing page.
+const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const PROVIDER_PHASE_TIMEOUT: Duration = Duration::from_secs(1_800);
 const REVISION_DIR: &str = ".llm-wiki/embedding-revisions";
 
 #[derive(Debug, Clone, Serialize)]
@@ -173,7 +176,7 @@ pub async fn embed_wiki_page(
         PageEmbeddingError::new(
             PageEmbeddingErrorKind::Timeout,
             format!(
-                "Embedding provider timed out after {} seconds",
+                "Page embedding exceeded the total provider budget of {} seconds",
                 PROVIDER_PHASE_TIMEOUT.as_secs()
             ),
         )
@@ -236,9 +239,7 @@ async fn prepare_embedding_rows(
                 .iter()
                 .map(|chunk| enrich_chunk(&title, chunk))
                 .collect::<Vec<_>>();
-            let embeddings = fetch_embedding_batch(&texts, &config)
-                .await
-                .map_err(|err| PageEmbeddingError::new(PageEmbeddingErrorKind::Provider, err))?;
+            let embeddings = await_provider_request(fetch_embedding_batch(&texts, config)).await?;
             if embeddings.len() != batch.len() {
                 return Err(PageEmbeddingError::new(
                     PageEmbeddingErrorKind::Provider,
@@ -252,13 +253,30 @@ async fn prepare_embedding_rows(
     } else {
         for (index, chunk) in chunks.iter().enumerate() {
             let embedding_text = enrich_chunk(&title, chunk);
-            let embedding = fetch_embedding_with_retry(&embedding_text, &config, 3)
-                .await
-                .map_err(|err| PageEmbeddingError::new(PageEmbeddingErrorKind::Provider, err))?;
+            let embedding =
+                await_provider_request(fetch_embedding_with_retry(&embedding_text, config, 3))
+                    .await?;
             rows.push(chunk_row(index, chunk, embedding));
         }
     }
     Ok(rows)
+}
+
+async fn await_provider_request<T>(
+    request: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, PageEmbeddingError> {
+    tokio::time::timeout(PROVIDER_REQUEST_TIMEOUT, request)
+        .await
+        .map_err(|_| {
+            PageEmbeddingError::new(
+                PageEmbeddingErrorKind::Timeout,
+                format!(
+                    "Embedding provider request timed out after {} seconds",
+                    PROVIDER_REQUEST_TIMEOUT.as_secs()
+                ),
+            )
+        })?
+        .map_err(|err| PageEmbeddingError::new(PageEmbeddingErrorKind::Provider, err))
 }
 
 fn embedding_batch_size(config: &SearchEmbeddingConfig) -> usize {

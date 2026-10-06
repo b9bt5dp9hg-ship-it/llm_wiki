@@ -1,0 +1,16 @@
+[package]
+name = "page-embedding-regression"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+walkdir = "2"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
