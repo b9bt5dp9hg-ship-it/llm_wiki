@@ -1,0 +1,19 @@
+{
+  "version": "0.6.12",
+  "binarySha256": "0a5a99ea8b590bab148a10baa03d8513d09af560cabc2f62fdfa4d900facbc7f",
+  "sourceBase": "2b5b0ad",
+  "nativeFix": "eacc923",
+  "mcpFix": "21423da",
+  "preservedBaselinePatches": [
+    "src-tauri/src/api_server.rs",
+    "src-tauri/src/commands/file_sync.rs",
+    "src/lib/source-watch-defaults.json"
+  ],
+  "productionFeature": "tauri/custom-protocol",
+  "buildExitCode": 0,
+  "buildSeconds": 225,
+  "strictBundleSignatureVerified": true,
+  "apiHealthy": true,
+  "nativeWindowUrl": "tauri://localhost",
+  "originalBundlePreservedAt": "/Applications/.LLM-Wiki-before-embedding-20261006.app"
+}

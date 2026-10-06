@@ -1,0 +1,20 @@
+{
+  "jobId": "636e9cab-a73c-41e0-a5cc-761b6d86dd35",
+  "projectId": "bca1c71e-9d90-4537-a338-d7851c04e72f",
+  "path": "wiki/codex-worklog.md",
+  "force": false,
+  "status": "completed",
+  "startedAt": "2026-10-06T03:31:46.752Z",
+  "completedAt": "2026-10-06T03:40:13.146Z",
+  "result": {
+    "path": "wiki/codex-worklog.md",
+    "pageId": "codex-worklog",
+    "revision": "sha256:5302931d571c42474e3660b536cb17a03a3c6e412e5319f1b20e40e09de2d60b",
+    "chunks": 1133,
+    "vectorsWritten": 1133,
+    "status": "indexed"
+  },
+  "elapsedSeconds": 511,
+  "sourceRevisionAtCompletion": "sha256:5302931d571c42474e3660b536cb17a03a3c6e412e5319f1b20e40e09de2d60b",
+  "sourceMatchesIndexedRevision": true
+}
