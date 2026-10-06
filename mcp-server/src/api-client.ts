@@ -1,4 +1,12 @@
+import { Agent, fetch as undiciFetch, type Dispatcher } from "undici"
+
 export const DEFAULT_API_BASE_URL = "http://127.0.0.1:19828"
+
+// The native page provider phase can run for 30 minutes. Override fetch's
+// per-request header deadline, leaving time for the final index replacement.
+// An Agent default alone is insufficient: fetch supplies its own 300 s value.
+const pageEmbeddingDispatcher = new Agent().compose((dispatch) => (options, handler) =>
+  dispatch({ ...options, headersTimeout: 31 * 60 * 1000 }, handler))
 
 /** The request never reached the app (connection refused / DNS / abort) —
  *  as opposed to an HTTP error the app answered with. The offline
@@ -206,11 +214,15 @@ export class LlmWikiApiClient {
   private readonly baseUrl: string
   private readonly token?: string
   private readonly fetchImpl: typeof fetch
+  private readonly embeddingFetchImpl: typeof fetch
 
   constructor(options: LlmWikiApiClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? process.env.LLM_WIKI_API_BASE_URL)
     this.token = options.token ?? process.env.LLM_WIKI_API_TOKEN
     this.fetchImpl = options.fetchImpl ?? fetch
+    // Pair the dedicated dispatcher with the same Undici version; Node may
+    // bundle a different dispatcher protocol in its global fetch implementation.
+    this.embeddingFetchImpl = options.fetchImpl ?? (undiciFetch as unknown as typeof fetch)
   }
 
   async health(): Promise<ApiHealth> {
@@ -353,6 +365,7 @@ export class LlmWikiApiClient {
     const json = await this.request(`/projects/${encodeURIComponent(projectId)}/pages/embed`, {
       method: "POST",
       body: { path, force },
+      pageEmbedding: true,
     })
     const result = requireObject(json.result, "page embedding result")
     return {
@@ -388,7 +401,7 @@ export class LlmWikiApiClient {
     }
   }
 
-  private async request(path: string, options: { method?: "GET" | "POST"; body?: unknown; auth?: boolean } = {}): Promise<Record<string, unknown>> {
+  private async request(path: string, options: { method?: "GET" | "POST"; body?: unknown; auth?: boolean; pageEmbedding?: boolean } = {}): Promise<Record<string, unknown>> {
     const url = `${this.baseUrl}${apiPath(path)}`
     const headers: Record<string, string> = { Accept: "application/json" }
     if (options.auth !== false && this.token?.trim()) {
@@ -398,11 +411,14 @@ export class LlmWikiApiClient {
 
     let response: Response
     try {
-      response = await this.fetchImpl(url, {
+      const init: RequestInit & { dispatcher?: Dispatcher } = {
         method: options.method ?? (options.body === undefined ? "GET" : "POST"),
         headers,
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      })
+      }
+      if (options.pageEmbedding) init.dispatcher = pageEmbeddingDispatcher
+      const fetchImpl = options.pageEmbedding ? this.embeddingFetchImpl : this.fetchImpl
+      response = await fetchImpl(url, init)
     } catch (err) {
       throw new ApiConnectionError(`LLM Wiki API request failed. Is the desktop app running? ${err instanceof Error ? err.message : String(err)}`)
     }

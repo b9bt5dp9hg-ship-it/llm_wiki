@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
+import { createServer } from "node:http"
+import { Agent, fetch as undiciFetch, type Dispatcher } from "undici"
 import { LlmWikiApiClient, normalizeBaseUrl } from "../src/api-client.js"
 
 test("normalizeBaseUrl trims trailing slashes and falls back to localhost", () => {
@@ -348,4 +350,41 @@ test("API errors include status and server message", async () => {
 
   const client = new LlmWikiApiClient({ fetchImpl })
   await assert.rejects(() => client.projects(), /LLM Wiki API 401: Unauthorized/)
+})
+
+
+test("page indexing can outlive the ordinary HTTP header deadline", async (t) => {
+  // Compress a long provider operation to 1.5 s. A short ordinary deadline
+  // reproduces the default fetch cutoff without a five-minute test.
+  const ordinary = new Agent().compose((dispatch) => (options, handler) =>
+    dispatch({ ...options, headersTimeout: 30 }, handler))
+  t.after(async () => {
+    await ordinary.close()
+  })
+  const server = createServer((_request, response) => {
+    setTimeout(() => {
+      response.writeHead(200, { "Content-Type": "application/json" })
+      response.end(JSON.stringify({ ok: true, result: {
+        path: "wiki/page.md", pageId: "page", revision: "sha256:test",
+        chunks: 1, vectorsWritten: 1, status: "indexed",
+      } }))
+    }, 1500)
+  })
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  const address = server.address()
+  assert.ok(address && typeof address !== "string")
+  const client = new LlmWikiApiClient({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    fetchImpl: (input, init) => {
+      const options = init as RequestInit & { dispatcher?: Dispatcher }
+      return (undiciFetch as unknown as typeof fetch)(input, { ...options, dispatcher: options?.dispatcher ?? ordinary } as RequestInit)
+    },
+  })
+  assert.equal((await client.embedPage("wiki/page.md")).status, "indexed")
+  // The dedicated deadline must not weaken the ordinary request deadline.
+  await assert.rejects(() => client.health(), /request failed/)
 })
