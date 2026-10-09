@@ -83,3 +83,6 @@ opt-level = "s"
 # larger binary, but prevents single-file corruption from killing the app.
 panic = "unwind"
 strip = true
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "=2.4.0"

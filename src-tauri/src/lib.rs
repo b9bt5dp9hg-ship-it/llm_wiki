@@ -552,7 +552,19 @@ fn tray_available<R: tauri::Runtime>(window: &tauri::Window<R>) -> bool {
 pub fn run() {
     apply_linux_webkit_compat_env();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Claim the application identity before any plugin or setup starts workers.
+    // Do not enable the plugin's semver feature: versions must share one instance.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
