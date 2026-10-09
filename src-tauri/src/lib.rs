@@ -6,6 +6,8 @@ mod cors;
 mod panic_guard;
 mod proxy;
 mod server_bind;
+#[cfg(target_os = "macos")]
+mod single_instance;
 mod tray;
 mod types;
 
@@ -555,7 +557,7 @@ pub fn run() {
     let builder = tauri::Builder::default();
     // Claim the application identity before any plugin or setup starts workers.
     // Do not enable the plugin's semver feature: versions must share one instance.
-    #[cfg(desktop)]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
@@ -563,6 +565,38 @@ pub fn run() {
             let _ = window.set_focus();
         }
     }));
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<tauri::Wry, ()>::new("single-instance")
+            .setup(|app, _| {
+                let directory = app.path().app_data_dir()?.join("single-instance");
+                match single_instance::claim(&directory)? {
+                    single_instance::Instance::Primary(primary) => {
+                        let listener = primary.listener.try_clone()?;
+                        let handle = app.clone();
+                        std::thread::Builder::new()
+                            .name("wiki-instance-focus".into())
+                            .spawn(move || {
+                                for stream in listener.incoming() {
+                                    let Ok(stream) = stream else { break };
+                                    if single_instance::is_same_user(&stream) {
+                                        if let Some(window) = handle.get_webview_window("main") {
+                                            let _ = window.show();
+                                            let _ = window.unminimize();
+                                            let _ = window.set_focus();
+                                        }
+                                    }
+                                }
+                            })?;
+                        app.manage(primary);
+                    }
+                    single_instance::Instance::Secondary => std::process::exit(0),
+                }
+                Ok(())
+            })
+            .build(),
+    );
 
     builder
         .plugin(tauri_plugin_opener::init())
