@@ -84,11 +84,11 @@ async function isEndpointReachable(url: string, timeoutMs: number): Promise<bool
 describe("vision wire E2E (real LLM)", () => {
   it(
     "text-only baseline — endpoint is alive and our SSE parser sees its output",
-    async () => {
+    async (ctx) => {
       const reachable = await isEndpointReachable(ENDPOINT, REACHABILITY_TIMEOUT_MS)
       if (!reachable) {
         console.warn(`[vision.real-llm] ${ENDPOINT} not reachable — skipping`)
-        return
+        ctx.skip()
       }
       const cfg: LlmConfig = {
         provider: "custom",
@@ -135,14 +135,14 @@ describe("vision wire E2E (real LLM)", () => {
 
   it(
     "OpenAI-compat endpoint accepts ContentBlock[] with image and produces a description",
-    async () => {
+    async (ctx) => {
       // Skip rather than fail when the LAN endpoint isn't reachable —
       // contributors without that machine still get to run the rest
       // of the .real-llm.* suite.
       const reachable = await isEndpointReachable(ENDPOINT, REACHABILITY_TIMEOUT_MS)
       if (!reachable) {
         console.warn(`[vision.real-llm] ${ENDPOINT} not reachable in ${REACHABILITY_TIMEOUT_MS}ms — skipping`)
-        return
+        ctx.skip()
       }
 
       const cfg: LlmConfig = {

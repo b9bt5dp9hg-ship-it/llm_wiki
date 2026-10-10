@@ -1791,6 +1791,128 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    // Exercise the native HTTP transport, not a TypeScript copy behind mocked IPC.
+    fn embedding_http_fixture(
+        max_chars: usize,
+        requests: usize,
+    ) -> (SearchEmbeddingConfig, std::thread::JoinHandle<Vec<usize>>) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/embeddings", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut sizes = Vec::new();
+            while sizes.len() < requests {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "embedding request never arrived");
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                };
+                // Accepted sockets inherit nonblocking mode on macOS.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0, "request ended before headers");
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+                        assert!(headers.contains("origin: http://localhost"));
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .map(|n| n.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap();
+                        break (end + 4, length);
+                    }
+                };
+                while bytes.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0, "request body truncated");
+                    bytes.extend_from_slice(&buffer[..count]);
+                }
+                let body: Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + content_length])
+                        .unwrap();
+                let size = body["input"].as_str().unwrap().chars().count();
+                sizes.push(size);
+                let (status, response) = if size > max_chars {
+                    (
+                        "400 Bad Request",
+                        json!({"error": format!("input length {size} exceeds maximum context {max_chars}")}),
+                    )
+                } else {
+                    ("200 OK", json!({"data": [{"embedding": [0.1, 0.2, 0.3]}]}))
+                };
+                let response = response.to_string();
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            }
+            sizes
+        });
+        let cfg = SearchEmbeddingConfig {
+            enabled: true,
+            endpoint,
+            api_key: String::new(),
+            model: "fixture".into(),
+            output_dimensionality: None,
+            extra_headers: None,
+            max_chunk_chars: None,
+            overlap_chunk_chars: None,
+            batch_size: None,
+        };
+        (cfg, worker)
+    }
+
+    #[tokio::test]
+    async fn embedding_http_halves_until_success() {
+        let (cfg, worker) = embedding_http_fixture(200, 3);
+        let vector = embedding_fetch("a".repeat(800), cfg, Some(3))
+            .await
+            .unwrap();
+        assert_eq!(vector, vec![0.1, 0.2, 0.3]);
+        assert_eq!(worker.join().unwrap(), vec![800, 400, 200]);
+    }
+
+    #[tokio::test]
+    async fn embedding_http_stops_at_retry_budget() {
+        let (cfg, worker) = embedding_http_fixture(50, 4);
+        let error = embedding_fetch("a".repeat(2048), cfg, Some(3))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Endpoint rejected input even at 256 chars"),
+            "{error}"
+        );
+        assert!(error.contains("Max Chunk Chars"), "{error}");
+        assert_eq!(worker.join().unwrap(), vec![2048, 1024, 512, 256]);
+    }
+
+    #[tokio::test]
+    async fn embedding_http_stops_at_character_floor() {
+        let (cfg, worker) = embedding_http_fixture(0, 2);
+        let error = embedding_fetch("a".repeat(128), cfg, Some(3))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Endpoint rejected input even at 64 chars"),
+            "{error}"
+        );
+        assert_eq!(worker.join().unwrap(), vec![128, 64]);
+    }
+
     fn tmp_project() -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::SeqCst);
