@@ -313,6 +313,79 @@ describe("review-linked research", () => {
 })
 
 describe("collectResearchSources", () => {
+  it("serializes searches so a single-slot provider does not reject a burst", async () => {
+    let active = false
+    const started: string[] = []
+    const releases: Array<() => void> = []
+    const webSearch = async (query: string) => {
+      if (active) throw new Error("SearXNG search failed (429 Too Many Requests): busy")
+      active = true
+      started.push(query)
+      await new Promise<void>((resolve) => releases.push(resolve))
+      active = false
+      return [{ ...webResult, url: `https://example.com/${query}` }]
+    }
+    const result = collectResearchSources(
+      ["one", "two", "three"], config({ provider: "searxng", searXngUrl: "http://localhost:19829" }),
+      "/project", { webSearch, anyTxtSearch: async () => [] },
+    )
+    for (const count of [1, 2, 3]) {
+      await vi.waitFor(() => expect(started).toHaveLength(count), { timeout: 200 })
+      releases.shift()!()
+    }
+    expect((await result).errors).toEqual([])
+    expect((await result).results.map((row) => row.url)).toEqual([
+      "https://example.com/one", "https://example.com/two", "https://example.com/three",
+    ])
+  })
+
+  it("waits and retries transient 429 responses, then returns the recovered source", async () => {
+    vi.useFakeTimers()
+    try {
+      let attempts = 0
+      const pending = collectResearchSources(
+        ["alpha"], config({ provider: "searxng", searXngUrl: "http://localhost:19829" }),
+        "/project", {
+          webSearch: async () => {
+            if (++attempts < 3) throw "SearXNG search failed (429 Too Many Requests): busy"
+            return [webResult]
+          }, anyTxtSearch: async () => [],
+        },
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempts).toBe(1)
+      await vi.runAllTimersAsync()
+      expect((await pending).results).toEqual([webResult])
+      expect((await pending).errors).toEqual([])
+      expect(attempts).toBe(3)
+    } finally { vi.useRealTimers() }
+  })
+
+  it("bounds busy retries and continues to the next query after permanent errors", async () => {
+    vi.useFakeTimers()
+    try {
+      const attempts: Record<string, number> = {}
+      const pending = collectResearchSources(
+        ["busy", "denied", "good"], config({ provider: "searxng", searXngUrl: "http://localhost:19829" }),
+        "/project", {
+          webSearch: async (q) => {
+            attempts[q] = (attempts[q] ?? 0) + 1
+            if (q === "busy") throw new Error("SearXNG search failed (429 Too Many Requests): busy")
+            if (q === "denied") throw new Error("SearXNG search failed (401 Unauthorized): denied")
+            return [webResult]
+          }, anyTxtSearch: async () => [],
+        },
+      )
+      await vi.runAllTimersAsync()
+      const result = await pending
+      expect(attempts.busy).toBeGreaterThan(1)
+      expect(attempts.busy).toBeLessThanOrEqual(5)
+      expect(attempts.denied).toBe(1)
+      expect(result.results).toEqual([webResult])
+      expect(result.errors).toHaveLength(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it("uses only Web Search when source mode is web", async () => {
     const webSearch = vi.fn().mockResolvedValue([webResult])
     const anyTxtSearch = vi.fn().mockResolvedValue([localResult])

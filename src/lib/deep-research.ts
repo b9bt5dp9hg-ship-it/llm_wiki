@@ -400,6 +400,20 @@ export function resolveReviewForSavedResearch(
   return true
 }
 
+async function retryBusySearch(search: () => Promise<import("./web-search").WebSearchResult[]>) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await search()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      // Rust returns provider HTTP failures as strings. Retry only an explicit
+      // rate-limit status, never authentication, network or validation errors.
+      if (attempt >= 4 || !/search failed \(429(?:\s|\))/i.test(message)) throw error
+      await new Promise((resolve) => setTimeout(resolve, 2_000 * 2 ** attempt))
+    }
+  }
+}
+
 export async function collectResearchSources(
   queries: string[],
   searchConfig: SearchApiConfig,
@@ -436,10 +450,16 @@ export async function collectResearchSources(
 
   const webQueries = queries.map((q) => q.trim()).filter(Boolean)
   const calls: Array<Promise<{ results: import("./web-search").WebSearchResult[] }>> = []
+  let webQueue: Promise<void> = Promise.resolve()
 
   for (const webQuery of webQueries) {
     if (useWeb && webConfigured && webQuery) {
-      calls.push(deps.webSearch(webQuery, resolvedSearchConfig, 5).then((results) => ({ results })))
+      const call = webQueue.then(() => retryBusySearch(
+        () => deps.webSearch(webQuery, resolvedSearchConfig, 5),
+      )).then((results) => ({ results }))
+      calls.push(call)
+      // A failed query must release the next queued query too.
+      webQueue = call.then(() => {}, () => {})
     }
   }
   if (useAnyTxt) {
