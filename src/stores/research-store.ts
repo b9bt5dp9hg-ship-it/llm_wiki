@@ -83,7 +83,8 @@ function createResearchTask(
 export const useResearchStore = create<ResearchState>((set, get) => ({
   tasks: [],
   panelOpen: false,
-  maxConcurrent: 3,
+  // Local search and synthesis providers can each have a single worker.
+  maxConcurrent: 1,
 
   addTask: (topic) => {
     const task = createResearchTask({ topic })

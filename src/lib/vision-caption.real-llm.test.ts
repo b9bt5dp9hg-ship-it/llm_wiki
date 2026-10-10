@@ -59,11 +59,11 @@ async function isEndpointReachable(url: string, timeoutMs: number): Promise<bool
 describe("captionImage E2E (real LLM)", () => {
   it(
     "returns a non-empty caption mentioning 'red' for a solid-red image",
-    async () => {
+    async (ctx) => {
       const reachable = await isEndpointReachable(ENDPOINT, REACHABILITY_TIMEOUT_MS)
       if (!reachable) {
         console.warn(`[vision-caption.real-llm] ${ENDPOINT} not reachable — skipping`)
-        return
+        ctx.skip()
       }
 
       const cfg: LlmConfig = {
