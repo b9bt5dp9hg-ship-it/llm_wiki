@@ -1852,6 +1852,18 @@ fn try_acquire_page_embed_slot() -> Option<PageEmbedSlot> {
         .map(|_| PageEmbedSlot)
 }
 
+/// HTTP workers must not `block_on` the shared Tauri runtime: a 5-minute
+/// Ollama embed would freeze the GUI and other commands. Each call gets its
+/// own current-thread runtime; LanceDB/reqwest connections are created inside
+/// the future, so they stay on that runtime.
+fn block_on_isolated<F: std::future::Future>(fut: F) -> Result<F::Output, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("Failed to start isolated async runtime: {err}"))
+        .map(|runtime| runtime.block_on(fut))
+}
+
 fn handle_embed_page(app: &AppHandle, project_id: &str, body: &str) -> ApiResponse {
     let project = match resolve_project(app, project_id) {
         Ok(project) => project,
@@ -1870,12 +1882,15 @@ fn handle_embed_page(app: &AppHandle, project_id: &str, body: &str) -> ApiRespon
     let Some(_slot) = try_acquire_page_embed_slot() else {
         return err(503, "Too many page indexing requests are already running");
     };
-    let result = tauri::async_runtime::block_on(commands::page_embedding::embed_wiki_page(
+    let result = match block_on_isolated(commands::page_embedding::embed_wiki_page(
         &project.path,
         &req.path,
         config,
         req.force,
-    ));
+    )) {
+        Ok(result) => result,
+        Err(error) => return err(500, error),
+    };
     match result {
         Ok(result) => ok(json!({
             "ok": true,
@@ -1909,23 +1924,23 @@ fn handle_search(app: &AppHandle, project_id: &str, body: &str) -> ApiResponse {
     }
     let top_k = req.top_k.unwrap_or(10).clamp(1, MAX_SEARCH_RESULTS);
     let query = req.query;
-    let query_embedding =
-        match tauri::async_runtime::block_on(commands::search::resolve_query_embedding(
-            &query,
-            req.query_embedding,
-            load_embedding_config(app),
-        )) {
-            Ok(embedding) => embedding,
-            Err(e) => return err(400, e),
-        };
-    match tauri::async_runtime::block_on(commands::search::search_project_inner(
+    let query_embedding = match block_on_isolated(commands::search::resolve_query_embedding(
+        &query,
+        req.query_embedding,
+        load_embedding_config(app),
+    )) {
+        Ok(Ok(embedding)) => embedding,
+        Ok(Err(e)) => return err(400, e),
+        Err(e) => return err(500, e),
+    };
+    match block_on_isolated(commands::search::search_project_inner(
         project.path.clone(),
         query,
         top_k,
         req.include_content.unwrap_or(false),
         query_embedding,
     )) {
-        Ok(search) => ok(json!({
+        Ok(Ok(search)) => ok(json!({
             "ok": true,
             "projectId": project.id,
             "mode": search.mode,
@@ -1935,7 +1950,7 @@ fn handle_search(app: &AppHandle, project_id: &str, body: &str) -> ApiResponse {
             "graphHits": search.graph_hits,
             "results": search.results,
         })),
-        Err(e) => err(500, e),
+        Ok(Err(e)) | Err(e) => err(500, e),
     }
 }
 
@@ -3681,6 +3696,12 @@ mod tests {
         assert!(constant_time_eq(b"", b""));
         assert!(!constant_time_eq(b"token", b"tokeN"));
         assert!(!constant_time_eq(b"token", b"token-longer"));
+    }
+
+    #[test]
+    fn isolated_runtime_runs_async_work_off_the_tauri_runtime() {
+        let value = block_on_isolated(async { 7 }).expect("runtime");
+        assert_eq!(value, 7);
     }
 
     #[test]
