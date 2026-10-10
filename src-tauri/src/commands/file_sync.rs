@@ -270,10 +270,14 @@ pub fn start_project_file_watcher(
         let tx_for_watcher = tx.clone();
         let root_for_overflow = root.clone();
         let root_for_error = root.clone();
+        let root_for_filter = root.clone();
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| match res {
                 Ok(event) => {
                     for path in event.paths {
+                        if is_internal_llm_wiki_path(&root_for_filter, &path) {
+                            continue;
+                        }
                         if tx_for_watcher.try_send(path).is_err() {
                             let _ = tx_for_watcher.try_send(root_for_overflow.clone());
                             break;
@@ -475,7 +479,7 @@ fn handle_changed_paths(
             continue;
         }
         if path.is_dir() {
-            for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
+            for entry in walk_files_skipping_internal_wiki(root, &path) {
                 if entry.file_type().is_file() && !is_app_write_ignored(entry.path()) {
                     if let Some(rel) = relative_watch_path(
                         root,
@@ -591,7 +595,7 @@ fn collect_known_paths(
     rules: &SourceWatchRules,
 ) {
     if path.is_dir() {
-        for entry in WalkDir::new(path).into_iter().filter_map(Result::ok) {
+        for entry in walk_files_skipping_internal_wiki(root, path) {
             if entry.file_type().is_file() {
                 if let Some(rel) = relative_watch_path(
                     root,
@@ -657,7 +661,7 @@ fn enqueue_rescan_changes(
 ) -> Result<(), String> {
     let rules = SourceWatchRules::new(source_watch_config);
     let mut rels = BTreeSet::<String>::new();
-    for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+    for entry in walk_files_skipping_internal_wiki(root, root) {
         if entry.file_type().is_file() {
             if let Some(rel) = relative_watch_path(
                 root,
@@ -723,7 +727,7 @@ fn enqueue_rescan_changes_for_prefixes(
                 }
             }
         } else if path.exists() {
-            for entry in WalkDir::new(&path).into_iter().filter_map(Result::ok) {
+            for entry in walk_files_skipping_internal_wiki(root, &path) {
                 if entry.file_type().is_file() {
                     if let Some(rel) = relative_watch_path(
                         root,
@@ -1133,7 +1137,8 @@ fn should_watch_rel(rel: &str, rules: &SourceWatchRules) -> bool {
         return false;
     }
     let lower = rel.to_lowercase();
-    if lower.contains("/.llm-wiki/")
+    if lower == ".llm-wiki"
+        || lower.contains("/.llm-wiki/")
         || lower.starts_with(".llm-wiki/")
         // App-managed generated media is intentionally ignored here. The
         // source markdown references drive graph/index refresh; media bytes
@@ -1207,6 +1212,23 @@ impl<'a> SourceWatchRules<'a> {
             }
         })
     }
+}
+
+fn is_internal_llm_wiki_path(root: &Path, path: &Path) -> bool {
+    let marker = root.join(".llm-wiki");
+    path == marker || path.starts_with(&marker)
+}
+
+fn walk_files_skipping_internal_wiki<'a>(
+    root: &'a Path,
+    start: &'a Path,
+) -> impl Iterator<Item = walkdir::DirEntry> + 'a {
+    WalkDir::new(start)
+        .into_iter()
+        .filter_entry(|entry| {
+            !entry.file_type().is_dir() || !is_internal_llm_wiki_path(root, entry.path())
+        })
+        .filter_map(Result::ok)
 }
 
 fn normalize_rel_string(value: &str) -> String {
@@ -1740,6 +1762,7 @@ mod tests {
         let rules = SourceWatchRules::new(&config);
         assert!(should_watch_rel("raw/sources/document.docx", &rules));
         assert!(should_watch_rel("wiki/concepts/topic.md", &rules));
+        assert!(!should_watch_rel(".llm-wiki", &rules));
         assert!(!should_watch_rel(
             ".llm-wiki/file-change-queue.json",
             &rules
@@ -1803,12 +1826,49 @@ mod tests {
         let default = SourceWatchConfig::default();
         assert!(default.include_extensions.contains(&"md".to_string()));
         assert!(default.exclude_dirs.contains(&".git".to_string()));
+        assert!(default.exclude_dirs.contains(&".llm-wiki".to_string()));
 
         let partial: SourceWatchConfig =
             serde_json::from_str(r#"{"enabled":false,"includeExtensions":["md"]}"#).unwrap();
         assert!(!partial.enabled);
         assert!(partial.auto_ingest);
         assert!(partial.exclude_dirs.contains(&".git".to_string()));
+        assert!(partial.exclude_dirs.contains(&".llm-wiki".to_string()));
+    }
+
+    #[test]
+    fn internal_llm_wiki_paths_are_skipped_before_queueing() {
+        let root = PathBuf::from("/Volumes/SSD/LLM Wiki/Coding");
+        assert!(is_internal_llm_wiki_path(
+            &root,
+            &root.join(".llm-wiki/file-snapshot.json")
+        ));
+        assert!(is_internal_llm_wiki_path(&root, &root.join(".llm-wiki")));
+        assert!(!is_internal_llm_wiki_path(
+            &root,
+            &root.join("wiki/codex-worklog.md")
+        ));
+    }
+
+    #[test]
+    fn rescan_does_not_enqueue_internal_llm_wiki_files() {
+        let root = temp_root("skip-internal");
+        fs::create_dir_all(root.join(".llm-wiki")).unwrap();
+        fs::write(root.join(".llm-wiki/vectors.bin"), vec![1u8; 4096]).unwrap();
+        fs::create_dir_all(root.join("wiki")).unwrap();
+        fs::write(root.join("wiki/page.md"), "# hi\n").unwrap();
+        ensure_sync_dir(&root).unwrap();
+        enqueue_rescan_changes(&root, "p1", &default_watch_config()).unwrap();
+        let tasks = read_queue(&root).unwrap().tasks;
+        assert!(
+            tasks.iter().any(|task| task.path == "wiki/page.md"),
+            "expected wiki page in {tasks:?}"
+        );
+        assert!(
+            tasks.iter().all(|task| !task.path.contains(".llm-wiki")),
+            "internal wiki files leaked into {tasks:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

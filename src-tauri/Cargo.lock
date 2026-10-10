@@ -2775,6 +2775,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs4"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4763,10 +4773,12 @@ dependencies = [
  "chrono",
  "docx-rs",
  "epub",
+ "fs2",
  "futures",
  "html2text",
  "image",
  "lancedb",
+ "libc",
  "md-5",
  "mobi",
  "notify",
@@ -4782,6 +4794,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-http",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tiny_http",
  "tokio",
@@ -7878,6 +7891,21 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "windows",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc61e4822b8f74d68278e09161d3e3fdd1b14b9eb781e24edccaabf10c420e8c"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-sys 0.60.2",
  "zbus",
 ]
 
