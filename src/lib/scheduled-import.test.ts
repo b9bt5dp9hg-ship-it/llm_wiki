@@ -318,7 +318,12 @@ describe("scanAndImport failure handling", () => {
     const destination = "/Users/me/wiki-project/raw/sources/scheduled-import/paper.pdf"
 
     const scan = scanAndImport(project, "/Users/me/inbox", { runId: 0 })
-    await flushMicrotasks()
+    // The scan awaits several stat/hash steps before copying (the stat cache
+    // added getFileModifiedTime). Wait until the copy is actually in flight,
+    // bounded so a scan that never copies still fails the assertion below.
+    for (let i = 0; i < 50 && mocks.copyFile.mock.calls.length === 0; i++) {
+      await flushMicrotasks()
+    }
     expect(mocks.copyFile).toHaveBeenCalledWith("/Users/me/inbox/paper.pdf", destination)
     stopScheduledImport()
     copy.resolve()

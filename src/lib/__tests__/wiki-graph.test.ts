@@ -225,7 +225,9 @@ describe("buildWikiGraph frontmatter extraction", () => {
         : "# Target",
     )
 
-    const graph = await buildWikiGraph("/related-project")
+    // mdFile() places pages under /project/wiki; the graph only resolves
+    // pages inside the built project's wiki root.
+    const graph = await buildWikiGraph("/project")
 
     expect(graph.edges).toEqual([
       expect.objectContaining({ source: "source", target: "target" }),

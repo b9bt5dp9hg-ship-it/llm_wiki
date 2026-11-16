@@ -1659,7 +1659,9 @@ describe("embedAllPages", () => {
     const upsertCalls = mockInvoke.mock.calls.filter((c) => c[0] === "vector_upsert_chunks")
     expect(upsertCalls).toHaveLength(3)
     const pageIds = upsertCalls.map((c) => (c[1] as { pageId: string }).pageId).sort()
-    expect(pageIds).toEqual(["index", "log", "overview"])
+    // Vector page ids are wiki-relative paths (same scheme as the Rust
+    // `vector_page_id` in page_embedding.rs and wikiPageIdFromPath).
+    expect(pageIds).toEqual(["guides/overview", "sources/log", "topics/index"])
     expect(readFileMock.mock.calls.map((call) => call[0]).sort()).toEqual([
       "/proj/wiki/guides/overview.md",
       "/proj/wiki/sources/log.md",
@@ -1667,8 +1669,8 @@ describe("embedAllPages", () => {
     ])
   })
 
-  it("rejects reindex when two wiki pages share the same file stem", async () => {
-    const duplicateTree = [
+  it("indexes same-named pages in different folders under distinct path ids", async () => {
+    listDirectoryMock.mockResolvedValueOnce([
       {
         name: "guides",
         path: "/proj/wiki/guides",
@@ -1685,11 +1687,40 @@ describe("embedAllPages", () => {
           { name: "notes.md", path: "/proj/wiki/archive/notes.md", is_dir: false },
         ],
       },
+    ])
+    readFileMock.mockResolvedValue("# Title\n\nBody.")
+    mockHttpFetch.mockImplementation(async () => okResponse([0.5]))
+
+    const count = await embedAllPages("/proj", cfg)
+
+    expect(count).toBe(2)
+    const pageIds = mockInvoke.mock.calls
+      .filter((c) => c[0] === "vector_upsert_chunks")
+      .map((c) => (c[1] as { pageId: string }).pageId)
+      .sort()
+    expect(pageIds).toEqual(["archive/notes", "guides/notes"])
+  })
+
+  it("rejects reindex when two wiki pages would share one vector page id", async () => {
+    // Path-qualified ids keep folders apart, but `notes.md` and `notes.MD`
+    // in the same folder still map to the same id and would overwrite
+    // each other's chunks.
+    const duplicateTree = [
+      {
+        name: "guides",
+        path: "/proj/wiki/guides",
+        is_dir: true,
+        children: [
+          { name: "notes.md", path: "/proj/wiki/guides/notes.md", is_dir: false },
+          { name: "notes.MD", path: "/proj/wiki/guides/notes.MD", is_dir: false },
+        ],
+      },
     ]
 
     for (const clearExisting of [true, false]) {
       mockInvoke.mockClear()
       mockHttpFetch.mockClear()
+      readFileMock.mockClear()
       listDirectoryMock.mockResolvedValueOnce(duplicateTree)
       readFileMock.mockResolvedValue("# Title\n\nBody.")
       mockHttpFetch.mockImplementation(async () => okResponse([0.5]))
@@ -1702,9 +1733,9 @@ describe("embedAllPages", () => {
       }
 
       expect(message).toMatch(/duplicate wiki page stem/i)
-      expect(message).toContain("notes")
-      expect(message).toContain("guides/notes.md")
-      expect(message).toContain("archive/notes.md")
+      expect(message).toContain('"guides/notes"')
+      expect(message).toContain("wiki/guides/notes.md")
+      expect(message).toContain("wiki/guides/notes.MD")
       expect(getEmbeddingReindexState()).toMatchObject({
         kind: "error",
         projectPath: "/proj",
