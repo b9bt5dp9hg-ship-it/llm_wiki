@@ -14,6 +14,7 @@ import {
   isResearchPanelVisible,
   nextResearchPanelNavState,
 } from "./research-panel-nav"
+import { iconControlAria, withPendingCount } from "./icon-sidebar-a11y"
 
 type NavView = WikiState["activeView"]
 
@@ -71,9 +72,11 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
     toggleResearchPanel(next.researchPanelOpen)
   }
 
+  const researchVisible = isResearchPanelVisible(activeView, researchPanelOpen)
+
   return (
     <TooltipProvider delay={300}>
-      <div className="flex h-full w-12 flex-col items-center border-r bg-muted/50 py-2">
+      <nav aria-label={t("app.title")} className="flex h-full w-12 flex-col items-center border-r bg-muted/50 py-2">
         {/* Logo */}
         <div className="mb-2 flex items-center justify-center">
           <img
@@ -84,17 +87,20 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
         </div>
         {/* Top: main nav items + Deep Research */}
         <div className="flex flex-1 flex-col items-center gap-1">
-          {NAV_ITEMS.map(({ view, icon: Icon, labelKey }) => (
+          {NAV_ITEMS.map(({ view, icon: Icon, labelKey }) => {
+            const label = view === "review" ? withPendingCount(t(labelKey), pendingCount) : t(labelKey)
+            return (
             <Tooltip key={view}>
               <TooltipTrigger
                 onClick={() => setActiveView(view)}
+                {...iconControlAria(label, activeView === view)}
                 className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                   activeView === view
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
                 }`}
               >
-                <Icon className="h-5 w-5" />
+                <Icon className="h-5 w-5" aria-hidden="true" />
                 {view === "review" && pendingCount > 0 && (
                   <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
                     {pendingCount > 99 ? "99+" : pendingCount}
@@ -102,40 +108,43 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
                 )}
               </TooltipTrigger>
               <TooltipContent side="right">
-                {t(labelKey)}
-                {view === "review" && pendingCount > 0 && ` (${pendingCount})`}
+                {label}
               </TooltipContent>
             </Tooltip>
-          ))}
+            )
+          })}
           {/* Deep Research — same row as other nav items */}
           <Tooltip>
             <TooltipTrigger
               onClick={handleResearchPanelToggle}
+              aria-label={withPendingCount(t("research.title"), researchActiveCount)}
+              aria-pressed={researchVisible}
               className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
-                isResearchPanelVisible(activeView, researchPanelOpen)
+                researchVisible
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
               }`}
             >
-              <Globe className="h-5 w-5" />
+              <Globe className="h-5 w-5" aria-hidden="true" />
               {researchActiveCount > 0 && (
                 <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-blue-500 px-1 text-[10px] font-bold text-white">
                   {researchActiveCount}
                 </span>
               )}
             </TooltipTrigger>
-            <TooltipContent side="right">{t("research.title")}</TooltipContent>
+            <TooltipContent side="right">{withPendingCount(t("research.title"), researchActiveCount)}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger
               onClick={() => setActiveView("skills")}
+              {...iconControlAria(t("nav.skills"), activeView === "skills")}
               className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                 activeView === "skills"
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
               }`}
             >
-              <Sparkles className="h-5 w-5" />
+              <Sparkles className="h-5 w-5" aria-hidden="true" />
             </TooltipTrigger>
             <TooltipContent side="right">{t("nav.skills")}</TooltipContent>
           </Tooltip>
@@ -144,7 +153,15 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
         <div className="flex flex-col items-center gap-1 pb-1">
           {/* Daemon status indicator */}
           <Tooltip>
-            <TooltipTrigger className="flex h-6 w-6 items-center justify-center">
+            <TooltipTrigger
+              className="flex h-6 w-6 items-center justify-center"
+              aria-label={
+                daemonStatus === "running" ? "Clip server running" :
+                daemonStatus === "starting" ? "Clip server starting..." :
+                daemonStatus === "port_conflict" ? "Port 19827 is occupied. Web Clipper unavailable." :
+                "Clip server error. Restarting..."
+              }
+            >
               <span
                 className={`h-2.5 w-2.5 rounded-full ${
                   daemonStatus === "running" ? "bg-emerald-500" :
@@ -164,13 +181,17 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           <Tooltip>
             <TooltipTrigger
               onClick={() => setActiveView("settings")}
+              {...iconControlAria(
+                updateAvailable ? `${t("nav.settings")}${t("nav.updateAvailableSuffix")}` : t("nav.settings"),
+                activeView === "settings",
+              )}
               className={`relative flex h-10 w-10 items-center justify-center rounded-md transition-colors ${
                 activeView === "settings"
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
               }`}
             >
-              <Settings className="h-5 w-5" />
+              <Settings className="h-5 w-5" aria-hidden="true" />
               {updateAvailable && (
                 // Update-available indicator on the Settings gear.
                 // Smaller (8px / `h-2 w-2`) so it doesn't shout —
@@ -196,14 +217,15 @@ export function IconSidebar({ onSwitchProject }: IconSidebarProps) {
           <Tooltip>
             <TooltipTrigger
               onClick={onSwitchProject}
+              {...iconControlAria(t("nav.switchProject"))}
               className="flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-accent-foreground"
             >
-              <ArrowLeftRight className="h-5 w-5" />
+              <ArrowLeftRight className="h-5 w-5" aria-hidden="true" />
             </TooltipTrigger>
             <TooltipContent side="right">{t("nav.switchProject")}</TooltipContent>
           </Tooltip>
         </div>
-      </div>
+      </nav>
     </TooltipProvider>
   )
 }

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import type { FileNode } from "@/types/wiki"
 import { filterSourceTreeByQuery, summarizeImportOutcome } from "./sources-view"
@@ -37,6 +38,38 @@ describe("filterSourceTreeByQuery", () => {
 
   it("returns an empty tree when no source matches", () => {
     expect(filterSourceTreeByQuery(TREE, "missing source")).toEqual([])
+  })
+})
+
+describe("source delete accessibility", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("names both armed and idle delete controls with their contextual hint", () => {
+    expect(source.match(/aria-label=\{hint\}/g)).toHaveLength(2)
+  })
+})
+
+describe("source tree accessibility", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("exposes source folders as non-submit disclosure controls", () => {
+    expect(source).toMatch(/type="button"\s+aria-expanded=\{!isCollapsed\}/)
+  })
+})
+
+describe("source preview request ordering", () => {
+  const source = readFileSync(new URL("./sources-view.tsx", import.meta.url), "utf8")
+
+  it("discards a slow source read after a newer selection", () => {
+    const start = source.indexOf("async function handleOpenSource")
+    const end = source.indexOf("async function handleOpenSourceExternally", start)
+    const handler = source.slice(start, end)
+    expect(handler).toMatch(/const requestId = \+\+sourceOpenRequest\.current/)
+    expect(handler).toMatch(/await readFile\(node\.path\)[\s\S]*requestId !== sourceOpenRequest\.current/)
+  })
+
+  it("invalidates pending reads on project changes", () => {
+    expect(source).toMatch(/sourceOpenRequest\.current\+\+[\s\S]*setSourceQuery\(""\)[\s\S]*\[project\?\.id\]/)
   })
 })
 

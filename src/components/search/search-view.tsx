@@ -1,13 +1,14 @@
-import { useState, useCallback, useMemo, useEffect } from "react"
+import { useState, useCallback, useMemo, useEffect, useLayoutEffect, useRef, useId } from "react"
 import { Search, FileText, ImageIcon, X, ArrowUpRight } from "lucide-react"
 import { useWikiStore } from "@/stores/wiki-store"
-import { readFile } from "@/commands/fs"
-import { searchWiki, tokenizeQuery, type SearchResult, type ImageRef } from "@/lib/search"
+import { createSearchSession, tokenizeQuery, type SearchResult, type ImageRef } from "@/lib/search"
 import { useTranslation } from "react-i18next"
 import { normalizePath } from "@/lib/path-utils"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { findRawSourceForImage, imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { isImeComposing } from "@/lib/keyboard-utils"
+import { lightboxDialogAria, searchFieldAria, trapTabInContainer } from "./search-a11y"
+import { createSearchNavigationSession } from "@/lib/search-navigation-session"
 
 /**
  * One image hit displayed in the Images section.
@@ -40,23 +41,48 @@ export function SearchView() {
   // the lightbox, and search-view-local state means the modal
   // closes naturally when the user navigates away from search.
   const [lightbox, setLightbox] = useState<ImageHit | null>(null)
+  const searchSessionRef = useRef(createSearchSession())
+  const navigationSessionRef = useRef(createSearchNavigationSession())
+
+  useEffect(() => {
+    searchSessionRef.current.invalidate()
+    navigationSessionRef.current.invalidate()
+    setResults([])
+    setSearching(false)
+    setHasSearched(false)
+    return () => navigationSessionRef.current.invalidate()
+  }, [project?.path])
 
   const doSearch = useCallback(
     async (q: string) => {
-      if (!project || !q.trim()) {
+      const session = searchSessionRef.current
+      if (!project) {
+        session.invalidate()
         setResults([])
+        setSearching(false)
+        return
+      }
+      if (!q.trim()) {
+        const outcome = await session.run(normalizePath(project.path), q)
+        if (outcome.status === "stale") return
+        setResults([])
+        setSearching(false)
         return
       }
       setSearching(true)
       setHasSearched(true)
+      const pending = session.run(normalizePath(project.path), q)
+      const token = session.generation
       try {
-        const found = await searchWiki(normalizePath(project.path), q)
-        setResults(found)
+        const outcome = await pending
+        if (outcome.status === "stale") return
+        setResults(outcome.results)
       } catch (err) {
+        if (!session.isCurrent(token)) return
         console.error("Search failed:", err)
         setResults([])
       } finally {
-        setSearching(false)
+        if (session.isCurrent(token)) setSearching(false)
       }
     },
     [project],
@@ -115,8 +141,10 @@ export function SearchView() {
 
   async function handleOpen(path: string) {
     try {
-      const content = await readFile(path)
-      openFileInPreview(path, content)
+      const outcome = await navigationSessionRef.current.open(path)
+      if (outcome.status === "applied") {
+        openFileInPreview(outcome.path, outcome.content)
+      }
     } catch (err) {
       console.error("Failed to open search result:", err)
     }
@@ -151,28 +179,29 @@ export function SearchView() {
    * open the wiki page so SOMETHING happens.
    */
   async function handleJumpFromLightbox(hit: ImageHit) {
-    const projectPath = project?.path
-    let openPath = hit.sourcePath
-    let scrollTarget = hit.url
-
-    if (projectPath) {
-      const pp = normalizePath(projectPath)
-      const rawPath = await findRawSourceForImage(hit.url, pp)
-      if (rawPath) {
-        console.log(`[search:jump] ${hit.url} → raw source ${rawPath}`)
-        openPath = rawPath
-        scrollTarget = imageUrlToAbsolute(scrollTarget, pp)
-      } else {
-        console.warn(
-          `[search:jump] no raw source found for image ${hit.url} — falling back to wiki page`,
-        )
-      }
-    }
-
     try {
-      const content = await readFile(openPath)
-      setPendingScrollImageSrc(scrollTarget)
-      openFileInPreview(openPath, content)
+      const projectPath = project?.path
+      const outcome = await navigationSessionRef.current.jump(async () => {
+        let path = hit.sourcePath
+        let scrollTarget = hit.url
+        if (projectPath) {
+          const pp = normalizePath(projectPath)
+          const rawPath = await findRawSourceForImage(hit.url, pp)
+          if (rawPath) {
+            console.log(`[search:jump] ${hit.url} → raw source ${rawPath}`)
+            path = rawPath
+            scrollTarget = imageUrlToAbsolute(scrollTarget, pp)
+          } else {
+            console.warn(
+              `[search:jump] no raw source found for image ${hit.url} — falling back to wiki page`,
+            )
+          }
+        }
+        return { path, scrollTarget }
+      })
+      if (outcome.status === "stale") return
+      setPendingScrollImageSrc(outcome.target.scrollTarget)
+      openFileInPreview(outcome.target.path, outcome.content)
       setLightbox(null)
     } catch (err) {
       console.error("Failed to jump to source:", err)
@@ -185,7 +214,7 @@ export function SearchView() {
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <input
-            type="text"
+            type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -193,6 +222,7 @@ export function SearchView() {
               if (e.key === "Enter") doSearch(query)
             }}
             placeholder={t("search.placeholderWithShortcut")}
+            {...searchFieldAria(t("search.title"))}
             className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
@@ -330,18 +360,30 @@ function Lightbox({
   onJumpToSource: () => void
 }) {
   const { t } = useTranslation()
-  // Escape-to-close. Body-scroll-lock while open: a long search-
-  // results list scrolling underneath the modal is disorienting.
-  useEffect(() => {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+  // Escape-to-close, Tab cycle, and restore focus to the thumbnail
+  // that opened the dialog. Body-scroll-lock while open: a long
+  // search-results list scrolling underneath is disorienting.
+  useLayoutEffect(() => {
+    const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") {
+        e.preventDefault()
+        onClose()
+        return
+      }
+      const dialog = dialogRef.current
+      if (dialog) trapTabInContainer(e, dialog)
     }
     document.addEventListener("keydown", onKey)
     const prev = document.body.style.overflow
     document.body.style.overflow = "hidden"
+    dialogRef.current?.focus()
     return () => {
       document.removeEventListener("keydown", onKey)
       document.body.style.overflow = prev
+      restore?.focus()
     }
   }, [onClose])
 
@@ -351,22 +393,21 @@ function Lightbox({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={onClose}
-      // Backdrop is the click target; the inner card stops
-      // propagation so clicks inside don't accidentally close.
-      role="dialog"
-      aria-modal="true"
     >
       <div
-        className="flex max-h-[90vh] w-[90vw] max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-xl"
+        ref={dialogRef}
+        tabIndex={-1}
+        className="flex max-h-[90vh] w-[90vw] max-w-4xl flex-col overflow-hidden rounded-lg border bg-background shadow-xl outline-none"
         onClick={(e) => e.stopPropagation()}
+        {...lightboxDialogAria(titleId)}
       >
         {/* Header strip — caption + close button. */}
         <div className="flex items-start justify-between gap-3 border-b px-4 py-2.5">
           <div className="min-w-0 flex-1">
             {hit.alt ? (
-              <div className="line-clamp-3 text-sm leading-snug">{hit.alt}</div>
+              <div id={titleId} className="line-clamp-3 text-sm leading-snug">{hit.alt}</div>
             ) : (
-              <div className="text-sm italic text-muted-foreground">{t("search.noCaption")}</div>
+              <div id={titleId} className="text-sm italic text-muted-foreground">{t("search.noCaption")}</div>
             )}
             <div className="mt-1 truncate text-[11px] text-muted-foreground">
               {t("search.fromSource", { source: hit.sourceTitle })}

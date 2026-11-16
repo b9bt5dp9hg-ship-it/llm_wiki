@@ -93,4 +93,65 @@ describe("ingest-cache — checkIngestCache", () => {
     const result = await checkIngestCache("/project", "foo.pdf", "hello")
     expect(result).toBeNull()
   })
+
+  it("treats escaped filesWritten as a miss even when those files exist", async () => {
+    // ingest-cache.json is project-local and not a trusted writer. A
+    // poisoned filesWritten list used to be returned verbatim after a
+    // hash match, so the activity panel could open /etc/passwd.
+    let persisted = ""
+    mockReadFile.mockImplementation(async () => persisted || JSON.stringify({ entries: {} }))
+    mockWriteFile.mockImplementation(async (_p: string, c: string) => {
+      persisted = c
+    })
+    await saveIngestCache("/project", "foo.pdf", "hello", ["wiki/sources/foo.md"])
+    const parsed = JSON.parse(persisted) as {
+      entries: Record<string, { filesWritten: string[] }>
+    }
+    parsed.entries["foo.pdf"].filesWritten = [
+      "/etc/passwd",
+      "wiki/../../../etc/passwd.md",
+      "wiki/../.llm-wiki/project.json",
+    ]
+    persisted = JSON.stringify(parsed)
+    mockFileExists.mockResolvedValue(true)
+
+    expect(await checkIngestCache("/project", "foo.pdf", "hello")).toBeNull()
+  })
+
+  it("rewrites in-project absolute wiki paths to project-relative wiki/*.md", async () => {
+    let persisted = ""
+    mockReadFile.mockImplementation(async () => persisted || JSON.stringify({ entries: {} }))
+    mockWriteFile.mockImplementation(async (_p: string, c: string) => {
+      persisted = c
+    })
+    await saveIngestCache("/project", "foo.pdf", "hello", [
+      "/project/wiki/sources/foo.md",
+    ])
+    mockFileExists.mockResolvedValue(true)
+
+    expect(await checkIngestCache("/project", "foo.pdf", "hello")).toEqual([
+      "wiki/sources/foo.md",
+    ])
+  })
+})
+
+describe("ingest-cache — saveIngestCache", () => {
+  it("does not persist filesWritten that leave wiki/", async () => {
+    let persisted = ""
+    mockReadFile.mockImplementation(async () => persisted || JSON.stringify({ entries: {} }))
+    mockWriteFile.mockImplementation(async (_p: string, c: string) => {
+      persisted = c
+    })
+
+    await saveIngestCache("/project", "foo.pdf", "hello", [
+      "/etc/passwd",
+      "wiki/sources/foo.md",
+      "wiki/../.llm-wiki/project.json",
+    ])
+
+    const parsed = JSON.parse(persisted) as {
+      entries: Record<string, { filesWritten: string[] }>
+    }
+    expect(parsed.entries["foo.pdf"].filesWritten).toEqual(["wiki/sources/foo.md"])
+  })
 })

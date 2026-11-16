@@ -20,6 +20,12 @@ use walkdir::WalkDir;
 use crate::cors::{local_cors_headers, request_origin};
 use crate::{agent, clip_server, commands, server_bind};
 
+#[path = "wiki_graph_links.rs"]
+mod wiki_graph_links;
+use wiki_graph_links::{
+    build_graph_pages, retain_edges_and_recount, ApiGraphEdge, ApiGraphNode, GraphPage,
+};
+
 const PORT: u16 = 19828;
 const API_PREFIX: &str = "/api/v1";
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -2483,28 +2489,14 @@ fn load_agent_runtime_config(app: &AppHandle, project_id: Option<&str>) -> Agent
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiGraphNode {
-    id: String,
-    label: String,
-    node_type: String,
-    path: String,
-    link_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApiGraphEdge {
-    source: String,
-    target: String,
-    weight: f64,
-}
-
-struct GraphPage {
+// Paged selection of the cached graph. Node/edge types and link resolution
+// live in wiki_graph_links (shared contract with the TS resolver and the MCP
+// offline fallback); `GraphPage` there is the per-file input type.
+struct GraphSelection {
     nodes: Vec<ApiGraphNode>,
     edges: Vec<ApiGraphEdge>,
     total_count: usize,
+    total_node_count: usize,
     has_more: bool,
 }
 
@@ -2547,6 +2539,7 @@ fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
                 limit,
                 paged_edges,
             );
+            let truncated = offset > 0 || page.has_more;
             ok(json!({
                 "ok": true,
                 "projectId": project.id,
@@ -2556,6 +2549,9 @@ fn handle_graph(app: &AppHandle, project_id: &str, query: &str) -> ApiResponse {
                 "limit": limit,
                 "totalCount": page.total_count,
                 "hasMore": page.has_more,
+                "totalNodeCount": page.total_node_count,
+                "matchedNodeCount": page.total_count,
+                "truncated": truncated,
             }))
         }
         Err(e) => err(500, e),
@@ -2570,47 +2566,39 @@ fn select_graph_page(
     offset: usize,
     limit: usize,
     paged_edges: bool,
-) -> GraphPage {
+) -> GraphSelection {
     let matches = |node: &&ApiGraphNode| {
         q.is_none_or(|q| {
             node.id.to_lowercase().contains(q) || node.label.to_lowercase().contains(q)
         }) && node_type.is_none_or(|node_type| node.node_type == node_type)
     };
-    let total_count = nodes.iter().filter(matches).count();
-    let filtered_ids = paged_edges.then(|| {
-        nodes
-            .iter()
-            .filter(matches)
-            .map(|node| node.id.clone())
-            .collect::<BTreeSet<_>>()
-    });
-    let nodes: Vec<ApiGraphNode> = nodes
-        .iter()
-        .filter(matches)
-        .skip(offset)
-        .take(limit)
-        .cloned()
-        .collect();
-    let page_ids: BTreeSet<String> = nodes.iter().map(|node| node.id.clone()).collect();
-    let edges = edges
-        .iter()
-        .filter(|edge| {
-            if paged_edges {
-                page_ids.contains(&edge.source)
-                    && filtered_ids
-                        .as_ref()
-                        .is_some_and(|ids| ids.contains(&edge.target))
-            } else {
-                page_ids.contains(&edge.source) && page_ids.contains(&edge.target)
-            }
-        })
-        .cloned()
-        .collect();
-    let has_more = offset.saturating_add(nodes.len()) < total_count;
-    GraphPage {
-        nodes,
+    // Degrees describe the returned graph (local-patches contract): first
+    // restrict to the q/nodeType-filtered graph, so merging every
+    // `edgeScope=filtered` page reproduces one unpaged filtered response.
+    let mut filtered: Vec<ApiGraphNode> = nodes.iter().filter(matches).cloned().collect();
+    let filtered_edges = retain_edges_and_recount(&mut filtered, edges.to_vec());
+    let total_count = filtered.len();
+    let mut page_nodes: Vec<ApiGraphNode> =
+        filtered.into_iter().skip(offset).take(limit).collect();
+    let edges = if paged_edges {
+        // Each edge is emitted once, with the page that owns its source; the
+        // target may live on another page of the same filtered set.
+        let page_ids: BTreeSet<&str> = page_nodes.iter().map(|node| node.id.as_str()).collect();
+        filtered_edges
+            .into_iter()
+            .filter(|edge| page_ids.contains(edge.source.as_str()))
+            .collect()
+    } else {
+        // Legacy/page scope: a self-contained graph whose degrees count only
+        // edges between returned nodes.
+        retain_edges_and_recount(&mut page_nodes, filtered_edges)
+    };
+    let has_more = offset.saturating_add(page_nodes.len()) < total_count;
+    GraphSelection {
+        nodes: page_nodes,
         edges,
         total_count,
+        total_node_count: nodes.len(),
         has_more,
     }
 }
@@ -2698,206 +2686,28 @@ fn build_graph_from_files(
     project_path: &str,
     files: &[PathBuf],
 ) -> Result<(Vec<ApiGraphNode>, Vec<ApiGraphEdge>), String> {
-    let wiki_root = Path::new(project_path).join("wiki");
-    let mut stem_counts = HashMap::new();
-    for path in files {
-        if let Some(stem) = path.file_stem().and_then(|value| value.to_str()) {
-            *stem_counts.entry(stem.to_string()).or_insert(0usize) += 1;
-        }
-    }
-    let mut raw: BTreeMap<String, (String, String, String, Vec<String>)> = BTreeMap::new();
-    for path in files {
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let relative_id = wiki_page_id(&wiki_root, path);
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let id = if stem_counts.get(stem) == Some(&1) {
-            stem.to_string()
-        } else {
-            relative_id
-        };
-        if id.is_empty() {
-            continue;
-        }
-        let fallback_name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("");
-        let title = commands::search::extract_title(&content, fallback_name);
-        let node_type = extract_type(&content);
-        let relative_path = relative_to_project(project_path, path);
-        let links = commands::search::extract_graph_links(&content);
-        raw.insert(id, (title, node_type, relative_path, links));
-    }
-    // Query pages are intermediate artifacts rather than graph nodes. Remove
-    // them before link resolution so the API cannot emit edges whose source
-    // or target is absent from the returned node set.
-    raw.retain(|_, (_, node_type, _, _)| node_type != "query");
-    let aliases = graph_aliases(&raw);
-    let mut link_count: BTreeMap<String, usize> = raw.keys().map(|id| (id.clone(), 0)).collect();
-    let mut seen = BTreeSet::new();
-    let mut edges = Vec::new();
-    for (source, (_, _, _, links)) in &raw {
-        for link in links {
-            let Some(target) = resolve_link(link, &aliases) else {
-                continue;
-            };
-            if &target == source {
-                continue;
+    // Unreadable pages stay in the inventory (content None) so identity and
+    // ambiguity rules match the TS reader; wiki_graph_links hides them.
+    let pages = files
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(path).ok();
+            let fallback_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            let label = content
+                .as_deref()
+                .map(|content| commands::search::extract_title(content, fallback_name))
+                .unwrap_or_default();
+            GraphPage {
+                path: relative_to_project(project_path, path),
+                label,
+                content,
             }
-            let key = if source < &target {
-                format!("{source}::{target}")
-            } else {
-                format!("{target}::{source}")
-            };
-            if seen.insert(key) {
-                *link_count.entry(source.clone()).or_default() += 1;
-                *link_count.entry(target.clone()).or_default() += 1;
-                edges.push(ApiGraphEdge {
-                    source: source.clone(),
-                    target,
-                    weight: 1.0,
-                });
-            }
-        }
-    }
-    let nodes = raw
-        .into_iter()
-        .map(|(id, (label, node_type, path, _))| ApiGraphNode {
-            link_count: *link_count.get(&id).unwrap_or(&0),
-            id,
-            label,
-            node_type,
-            path,
         })
         .collect();
-    Ok((nodes, edges))
-}
-
-fn wiki_page_id(wiki_root: &Path, path: &Path) -> String {
-    path.strip_prefix(wiki_root)
-        .unwrap_or(path)
-        .with_extension("")
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-struct GraphAliases {
-    exact_ids: HashMap<String, String>,
-    ids: HashMap<String, Option<String>>,
-    stems: HashMap<String, Option<String>>,
-    titles: HashMap<String, Option<String>>,
-}
-
-fn graph_aliases(raw: &BTreeMap<String, (String, String, String, Vec<String>)>) -> GraphAliases {
-    let mut aliases = GraphAliases {
-        exact_ids: HashMap::new(),
-        ids: HashMap::new(),
-        stems: HashMap::new(),
-        titles: HashMap::new(),
-    };
-    for (id, (title, _, path, _)) in raw {
-        aliases.exact_ids.insert(id.clone(), id.clone());
-        insert_graph_alias(&mut aliases.ids, name_alias_keys(id), id);
-        let canonical_path = path
-            .strip_prefix("wiki/")
-            .unwrap_or(path)
-            .trim_end_matches(".md");
-        insert_graph_alias(&mut aliases.ids, name_alias_keys(canonical_path), id);
-        if let Some(stem) = id.rsplit('/').next() {
-            insert_graph_alias(&mut aliases.stems, name_alias_keys(stem), id);
-        }
-        insert_graph_alias(&mut aliases.titles, name_alias_keys(title), id);
-    }
-    aliases
-}
-
-fn insert_graph_alias(aliases: &mut HashMap<String, Option<String>>, keys: Vec<String>, id: &str) {
-    for key in keys {
-        match aliases.get(&key) {
-            None => {
-                aliases.insert(key, Some(id.to_string()));
-            }
-            Some(Some(existing)) if existing != id => {
-                aliases.insert(key, None);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn link_alias_keys(raw: &str) -> Vec<String> {
-    let target = raw
-        .split('|')
-        .next()
-        .unwrap_or("")
-        .split('#')
-        .next()
-        .unwrap_or("")
-        .trim();
-    name_alias_keys(target)
-}
-
-fn name_alias_keys(raw: &str) -> Vec<String> {
-    let normalized = raw.trim().replace('\\', "/").to_lowercase();
-    let normalized = normalized.trim_matches('/');
-    let normalized = normalized.strip_prefix("./").unwrap_or(normalized);
-    let normalized = normalized.strip_prefix("wiki/").unwrap_or(normalized);
-    let normalized = if normalized.ends_with(".md") {
-        &normalized[..normalized.len() - 3]
-    } else {
-        normalized
-    };
-    if normalized.is_empty() {
-        return Vec::new();
-    }
-    let slugged = normalized.replace(' ', "-");
-    if slugged == normalized {
-        vec![normalized.to_string()]
-    } else {
-        vec![normalized.to_string(), slugged]
-    }
-}
-
-fn extract_type(content: &str) -> String {
-    for line in content.lines() {
-        if let Some(value) = line.trim().strip_prefix("type:") {
-            return value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_lowercase();
-        }
-    }
-    "other".to_string()
-}
-
-fn resolve_link(raw: &str, aliases: &GraphAliases) -> Option<String> {
-    let exact = raw
-        .split('|')
-        .next()
-        .unwrap_or("")
-        .split('#')
-        .next()
-        .unwrap_or("")
-        .trim();
-    if let Some(id) = aliases.exact_ids.get(exact) {
-        return Some(id.clone());
-    }
-    let keys = link_alias_keys(raw);
-    for tier in [&aliases.ids, &aliases.stems, &aliases.titles] {
-        for key in &keys {
-            if let Some(resolved) = tier.get(key) {
-                return resolved.clone();
-            }
-        }
-    }
-    None
+    Ok(build_graph_pages(pages))
 }
 
 fn invalidate_graph_cache(project_path: &str) {
@@ -2979,6 +2789,125 @@ mod tests {
         let path = std::env::temp_dir().join(format!("llm-wiki-api-test-{id}-{seq}"));
         fs::create_dir_all(path.join("wiki")).unwrap();
         path
+    }
+
+    fn graph_fixture(pages: &[(&str, &str)]) -> (Vec<ApiGraphNode>, Vec<ApiGraphEdge>) {
+        let root = test_project_dir();
+        for (path, content) in pages {
+            let target = root.join("wiki").join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, content).unwrap();
+        }
+        let result = build_graph(root.to_str().unwrap());
+        fs::remove_dir_all(root).unwrap();
+        result.unwrap()
+    }
+
+    #[test]
+    fn graph_resolves_existing_page_paths_extensions_aliases_and_fragments() {
+        for target in [
+            "ziel",
+            "ziel.md",
+            "concepts/ziel",
+            "concepts/ziel.md",
+            "wiki/concepts/ziel.md",
+            "concepts/ziel.md#Abschnitt|Anzeige",
+            "wiki\\concepts\\ziel.md",
+            "concepts/./ziel",
+        ] {
+            let source = format!("---\ntype: concept\n---\n[[{target}]]");
+            let (nodes, edges) = graph_fixture(&[
+                ("entities/start.md", &source),
+                ("concepts/ziel.md", "---\ntype: concept\n---\n# Ziel"),
+            ]);
+            assert_eq!(edges.len(), 1, "existing target {target}");
+            assert!(nodes.iter().all(|node| node.link_count == 1));
+        }
+    }
+
+    #[test]
+    fn graph_normalizes_unicode_and_preserves_case_and_space_fallbacks() {
+        for target in ["gru\u{0308}ne-seite", "GRÜNE-SEITE", "Grüne Seite"] {
+            let source = format!("[[{target}]]");
+            let (_, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("concepts/grüne-seite.md", "# Seite"),
+            ]);
+            assert_eq!(edges.len(), 1, "normalized target {target}");
+        }
+    }
+
+    #[test]
+    fn graph_related_accepts_yaml_sequences_and_ignores_non_string_items() {
+        for frontmatter in [
+            "related:\n  - ziel\n  - 'concepts/zweite.md'\n  - ziel\n",
+            "related: [ziel, \"concepts/zweite.md\", ziel, 7, {target: falsch}]\n",
+        ] {
+            let source = format!("---\ntype: concept\n{frontmatter}---\n# Start");
+            let (nodes, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("concepts/ziel.md", "# Ziel"),
+                ("concepts/zweite.md", "# Zweite"),
+                ("concepts/falsch.md", "# Falsch"),
+            ]);
+            assert_eq!(edges.len(), 2);
+            assert_eq!(
+                nodes
+                    .iter()
+                    .find(|node| node.id == "start")
+                    .unwrap()
+                    .link_count,
+                2
+            );
+            assert_eq!(
+                nodes
+                    .iter()
+                    .find(|node| node.id == "falsch")
+                    .unwrap()
+                    .link_count,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn graph_excludes_query_nodes_before_edges_and_degrees() {
+        let (nodes, edges) = graph_fixture(&[
+            ("sichtbar.md", "[[frage]]"),
+            ("frage.md", "---\ntype: query\n---\n[[sichtbar]]"),
+        ]);
+        assert_eq!(nodes.len(), 1);
+        assert!(edges.is_empty());
+        assert_eq!(nodes[0].link_count, 0);
+    }
+
+    #[test]
+    fn graph_preserves_duplicate_stems_and_requires_unambiguous_targets() {
+        let (nodes, edges) = graph_fixture(&[
+            ("start.md", "[[dup]] [[concepts/dup]] [[entities/dup.md]]"),
+            ("concepts/dup.md", "# Concept"),
+            ("entities/dup.md", "# Entity"),
+        ]);
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.iter().any(|node| node.id == "concepts/dup"));
+        assert!(nodes.iter().any(|node| node.id == "entities/dup"));
+        assert_eq!(edges.len(), 2);
+
+        let (_, ambiguous) = graph_fixture(&[
+            ("start.md", "[[dup]]"),
+            ("concepts/dup.md", "# Concept"),
+            ("entities/dup.md", "# Entity"),
+        ]);
+        assert!(ambiguous.is_empty());
+    }
+
+    #[test]
+    fn graph_explicit_missing_or_external_paths_never_fall_back_to_a_basename() {
+        let (_, edges) = graph_fixture(&[
+            ("start.md", "[[wrong/ziel]] [[../ziel]] [[wiki/../ziel]] [[/ziel]] [[https://example.test/ziel]] [[OtherProject/wiki/ziel]]"),
+            ("concepts/ziel.md", "# Ziel"),
+        ]);
+        assert!(edges.is_empty());
     }
 
     #[test]
@@ -3090,54 +3019,41 @@ mod tests {
 
     #[test]
     fn graph_exact_id_wins_over_a_normalized_id_collision() {
-        let mut raw = BTreeMap::new();
-        for id in ["Machine Learning", "machine-learning"] {
-            raw.insert(
-                id.to_string(),
-                (
-                    id.to_string(),
-                    "entity".to_string(),
-                    format!("wiki/{id}.md"),
-                    vec![],
-                ),
-            );
+        for (link, expected) in [
+            ("Machine Learning", "Machine Learning"),
+            ("machine-learning", "machine-learning"),
+        ] {
+            let source = format!("[[{link}]]");
+            let (_, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("Machine Learning.md", "# ML"),
+                ("machine-learning.md", "# ml"),
+            ]);
+            assert_eq!(edges.len(), 1, "{link}");
+            assert_eq!(edges[0].target, expected, "{link}");
         }
-        let aliases = graph_aliases(&raw);
-        assert_eq!(
-            resolve_link("Machine Learning", &aliases).as_deref(),
-            Some("Machine Learning")
-        );
-        assert_eq!(
-            resolve_link("machine-learning", &aliases).as_deref(),
-            Some("machine-learning")
-        );
     }
 
     #[test]
     fn graph_link_normalization_accepts_common_path_forms() {
-        let mut raw = BTreeMap::new();
-        raw.insert(
-            "Page".to_string(),
-            (
-                "Display Title".to_string(),
-                "entity".to_string(),
-                "wiki/Page.md".to_string(),
-                vec![],
-            ),
-        );
-        let aliases = graph_aliases(&raw);
-        for link in [
-            "./Page",
-            "wiki/Page",
-            "/wiki/Page",
-            "Page.MD",
-            "Display Title",
+        // Root-anchored paths and display titles are not link targets under
+        // the shared wiki_graph_links contract (same as the TS resolver).
+        for (link, resolves) in [
+            ("./Page", true),
+            ("wiki/Page", true),
+            ("Page.MD", true),
+            ("/wiki/Page", false),
+            ("Display Title", false),
         ] {
-            assert_eq!(
-                resolve_link(link, &aliases).as_deref(),
-                Some("Page"),
-                "{link}"
-            );
+            let source = format!("[[{link}]]");
+            let (_, edges) = graph_fixture(&[
+                ("start.md", &source),
+                ("Page.md", "---\ntitle: Display Title\n---\n# Display Title"),
+            ]);
+            assert_eq!(edges.len(), usize::from(resolves), "{link}");
+            if resolves {
+                assert_eq!(edges[0].target, "Page", "{link}");
+            }
         }
     }
 

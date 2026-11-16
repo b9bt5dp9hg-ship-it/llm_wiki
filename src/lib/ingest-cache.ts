@@ -1,5 +1,42 @@
 import { readFile, writeFile, fileExists } from "@/commands/fs"
-import { normalizePath, isAbsolutePath } from "@/lib/path-utils"
+import { confinePreviewFilePath, getRelativePath, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+
+/**
+ * Cache entries list wiki pages written by ingest. The JSON file is not a
+ * trusted writer: a poisoned `filesWritten` list must not replay paths
+ * outside `<project>/wiki/*.md` (absolute files, `..`, `.llm-wiki`).
+ * Returns a project-relative `wiki/...md` path, or null.
+ */
+export function confineCachedWrittenPath(projectPath: string, filePath: unknown): string | null {
+  if (typeof filePath !== "string") return null
+  const confined = confinePreviewFilePath(projectPath, filePath)
+  if (!confined || !/\.md$/i.test(confined)) return null
+  const relative = getRelativePath(confined, projectPath).replace(/\\/g, "/")
+  if (!relative || isAbsolutePath(relative)) return null
+  if (!relative.startsWith("wiki/")) return null
+  if (relative.split("/").some((seg) => !seg || seg === "." || seg === "..")) return null
+  return relative
+}
+
+function confineCachedWrittenPathsStrict(projectPath: string, filesWritten: unknown): string[] | null {
+  if (!Array.isArray(filesWritten) || filesWritten.length === 0) return null
+  const confined: string[] = []
+  for (const filePath of filesWritten) {
+    const relative = confineCachedWrittenPath(projectPath, filePath)
+    if (!relative) return null
+    confined.push(relative)
+  }
+  return confined
+}
+
+function filterCachedWrittenPaths(projectPath: string, filesWritten: string[]): string[] {
+  const confined: string[] = []
+  for (const filePath of filesWritten) {
+    const relative = confineCachedWrittenPath(projectPath, filePath)
+    if (relative) confined.push(relative)
+  }
+  return confined
+}
 
 /**
  * SHA256-based ingest cache.
@@ -77,10 +114,10 @@ export async function checkIngestCache(
   if (entry.hash !== currentHash) return null
 
   const pp = normalizePath(projectPath)
-  for (const filePath of entry.filesWritten) {
-    const fullPath = isAbsolutePath(filePath)
-      ? normalizePath(filePath)
-      : `${pp}/${filePath}`
+  const confined = confineCachedWrittenPathsStrict(pp, entry.filesWritten)
+  if (!confined) return null
+  for (const filePath of confined) {
+    const fullPath = `${pp}/${filePath}`
     try {
       if (!(await fileExists(fullPath))) {
         console.log(
@@ -95,7 +132,7 @@ export async function checkIngestCache(
     }
   }
 
-  return entry.filesWritten
+  return confined
 }
 
 /**
@@ -107,13 +144,15 @@ export async function saveIngestCache(
   sourceContent: string,
   filesWritten: string[],
 ): Promise<void> {
+  const confined = filterCachedWrittenPaths(projectPath, filesWritten)
+  if (confined.length === 0) return
   const cache = await loadCache(projectPath)
   const hash = await sha256(sourceContent)
   const newEntries = { ...cache.entries }
   newEntries[sourceFileName] = {
     hash,
     timestamp: Date.now(),
-    filesWritten,
+    filesWritten: confined,
   }
   await saveCache(projectPath, { entries: newEntries })
 }
@@ -143,7 +182,10 @@ export async function moveIngestCacheEntry(
   if (!entry || oldSourceIdentity === newSourceIdentity) return
   const migratedEntry: CacheEntry = {
     ...entry,
-    filesWritten: entry.filesWritten.map((path) => movedFiles.get(path) ?? path),
+    filesWritten: filterCachedWrittenPaths(
+      projectPath,
+      entry.filesWritten.map((path) => movedFiles.get(path) ?? path),
+    ),
   }
   const newEntries = { ...cache.entries, [newSourceIdentity]: migratedEntry }
   delete newEntries[oldSourceIdentity]

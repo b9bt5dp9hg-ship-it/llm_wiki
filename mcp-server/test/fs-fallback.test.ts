@@ -3,6 +3,7 @@ import { test, before, after } from "node:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import type { ApiFileNode } from "../src/api-client.js"
 import {
   buildGraphOffline,
   findOfflineProject,
@@ -11,6 +12,7 @@ import {
   readProjectId,
   readProjectsFromAppState,
   readReviewsOffline,
+  refreshOfflineProjectIdentity,
   resolveOfflineProjectPath,
   searchOffline,
 } from "../src/fs-fallback.js"
@@ -73,6 +75,78 @@ test("listFilesOffline lists wiki and sources roots", () => {
   assert.ok(JSON.stringify(all.files).includes("raw/sources/mail/brief.txt"))
 })
 
+test("listFilesOffline root=all matches live-API public roots including purpose.md and schema.md", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-files-all-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.mkdirSync(path.join(root, "raw", "sources"), { recursive: true })
+    fs.writeFileSync(path.join(root, "purpose.md"), "# Purpose\n")
+    fs.writeFileSync(path.join(root, "schema.md"), "# Schema\n")
+    fs.writeFileSync(path.join(root, "wiki", "page.md"), "page")
+    fs.writeFileSync(path.join(root, "raw", "sources", "note.txt"), "note")
+
+    const listed = listFilesOffline(root, { root: "all" })
+    assert.deepEqual(
+      listed.files.map((node) => ({ name: node.name, path: node.path, isDir: node.isDir })),
+      [
+        { name: "purpose.md", path: "purpose.md", isDir: false },
+        { name: "schema.md", path: "schema.md", isDir: false },
+        { name: "wiki", path: "wiki", isDir: true },
+        { name: "sources", path: "raw/sources", isDir: true },
+      ],
+    )
+    assert.ok(listed.files[2]?.children?.some((child) => child.path === "wiki/page.md"))
+    assert.ok(listed.files[3]?.children?.some((child) => child.path === "raw/sources/note.txt"))
+
+    const wikiOnly = listFilesOffline(root, { root: "wiki" })
+    assert.equal(wikiOnly.files.some((node) => node.path === "purpose.md"), false)
+    assert.ok(wikiOnly.files.some((node) => node.path === "wiki/page.md"))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("listFilesOffline marks truncated only when remaining files were omitted", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-files-trunc-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki", "nested"), { recursive: true })
+    fs.mkdirSync(path.join(root, "wiki", "empty"), { recursive: true })
+    fs.mkdirSync(path.join(root, "raw", "sources"), { recursive: true })
+    fs.writeFileSync(path.join(root, "purpose.md"), "# Purpose\n")
+    fs.writeFileSync(path.join(root, "schema.md"), "# Schema\n")
+    fs.writeFileSync(path.join(root, "wiki", "alpha.md"), "alpha")
+    fs.writeFileSync(path.join(root, "wiki", "nested", "beta.md"), "beta")
+    fs.writeFileSync(path.join(root, "raw", "sources", "note.txt"), "note")
+
+    const exactWiki = listFilesOffline(root, { root: "wiki", maxFiles: 2 })
+    assert.equal(exactWiki.truncated, false)
+    assert.equal(countListedFiles(exactWiki.files), 2)
+
+    const omittedWiki = listFilesOffline(root, { root: "wiki", maxFiles: 1 })
+    assert.equal(omittedWiki.truncated, true)
+    assert.equal(countListedFiles(omittedWiki.files), 1)
+
+    const exactAll = listFilesOffline(root, { root: "all", maxFiles: 5 })
+    assert.equal(exactAll.truncated, false)
+    assert.equal(countListedFiles(exactAll.files), 5)
+
+    const omittedAll = listFilesOffline(root, { root: "all", maxFiles: 4 })
+    assert.equal(omittedAll.truncated, true)
+    assert.ok(countListedFiles(omittedAll.files) < 5)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function countListedFiles(nodes: ApiFileNode[]): number {
+  let count = 0
+  for (const node of nodes) {
+    if (node.isDir) count += countListedFiles(node.children ?? [])
+    else count++
+  }
+  return count
+}
+
 test("readFileOffline enforces the allow-list", () => {
   assert.ok(readFileOffline(projectDir, "wiki/alpha.md").content.includes("Alpha"))
   assert.ok(readFileOffline(projectDir, "purpose.md").content.includes("Purpose"))
@@ -81,30 +155,485 @@ test("readFileOffline enforces the allow-list", () => {
   assert.throws(() => readFileOffline(projectDir, "wiki/../.llm-wiki/review.json"), /not allowed/)
 })
 
-test("readReviewsOffline defaults to unresolved and backfills ids", () => {
+test("readFileOffline refuses a wiki file symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    const secret = path.join(outside, "secret.txt")
+    fs.writeFileSync(secret, "outside-secret")
+    fs.symlinkSync(secret, path.join(root, "wiki", "escape.md"))
+    assert.throws(
+      () => readFileOffline(root, "wiki/escape.md"),
+      /escapes the project directory/,
+    )
+    assert.equal(fs.readFileSync(secret, "utf8"), "outside-secret")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readFileOffline refuses a wiki path whose parent directory is a symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.mkdirSync(path.join(outside, "wiki"), { recursive: true })
+    fs.writeFileSync(path.join(outside, "wiki", "page.md"), "leaked-from-other-project")
+    fs.symlinkSync(path.join(outside, "wiki"), path.join(root, "wiki", "linked"))
+    assert.throws(
+      () => readFileOffline(root, "wiki/linked/page.md"),
+      /escapes the project directory/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("listFilesOffline and searchOffline do not follow a wiki root symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-wiki-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-wiki-src-"))
+  try {
+    fs.mkdirSync(path.join(outside, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, "wiki", "secret.md"),
+      "---\ntitle: Secret\n---\n\nOutside wiki body.\n",
+    )
+    fs.symlinkSync(path.join(outside, "wiki"), path.join(root, "wiki"))
+    const listed = JSON.stringify(listFilesOffline(root, { root: "wiki" }).files)
+    assert.equal(listed.includes("secret"), false)
+    const search = searchOffline(root, "Secret")
+    assert.equal(search.results.some((hit) => hit.path.includes("secret")), false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline defaults to unresolved and uses live-API stable ids", () => {
   const unresolved = readReviewsOffline(projectDir)
   assert.equal(unresolved.count, 1)
   assert.equal(unresolved.reviews[0].title, "Offen")
-  assert.equal(unresolved.reviews[0].id, "review-0")
+  assert.equal(unresolved.reviews[0].id, "review-40ddcb19")
 
   const all = readReviewsOffline(projectDir, { status: "all" })
   assert.equal(all.count, 2)
 })
 
+test("readReviewsOffline merges duplicate type+title items like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-dedup-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, ".llm-wiki", "review.json"),
+      JSON.stringify([
+        {
+          id: "review-old-unresolved",
+          type: "missing-page",
+          title: "Attention",
+          description: "",
+          affectedPages: ["a.md"],
+          resolved: false,
+          createdAt: 5,
+        },
+        {
+          id: "review-old-resolved",
+          type: "missing-page",
+          title: "Missing page: Attention",
+          description: "resolved copy",
+          affectedPages: ["b.md"],
+          resolved: true,
+          resolvedAction: "user-resolved",
+          createdAt: 2,
+        },
+      ]),
+    )
+
+    const unresolved = readReviewsOffline(root)
+    assert.equal(unresolved.count, 0)
+    assert.deepEqual(unresolved.reviews, [])
+
+    const all = readReviewsOffline(root, { status: "all" })
+    assert.equal(all.count, 1)
+    assert.equal(all.reviews[0].id, "review-dbdcf949")
+    assert.equal(all.reviews[0].resolved, true)
+    assert.equal(all.reviews[0].resolvedAction, "user-resolved")
+    assert.deepEqual(all.reviews[0].affectedPages, ["a.md", "b.md"])
+    assert.equal(all.reviews[0].createdAt, 2)
+    assert.equal(all.reviews[0].description, "resolved copy")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline treats a missing review.json as an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-missing-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const missing = readReviewsOffline(root)
+    assert.equal(missing.count, 0)
+    assert.deepEqual(missing.reviews, [])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline rejects invalid review.json instead of reporting an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-invalid-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(root, ".llm-wiki", "review.json"), "{not valid json")
+    assert.throws(
+      () => readReviewsOffline(root),
+      /Invalid review state JSON/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline rejects a non-array review.json instead of reporting an empty queue", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-object-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, ".llm-wiki", "review.json"),
+      JSON.stringify({ reviews: [{ title: "Hidden" }] }),
+    )
+    assert.throws(
+      () => readReviewsOffline(root),
+      /Invalid review state JSON: expected an array/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline refuses a review.json symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const secret = path.join(outside, "review.json")
+    fs.writeFileSync(secret, JSON.stringify([
+      { id: "leaked", type: "missing-page", title: "Outside Review", resolved: false, options: [], createdAt: 1 },
+    ]))
+    fs.symlinkSync(secret, path.join(root, ".llm-wiki", "review.json"))
+    assert.throws(
+      () => readReviewsOffline(root),
+      /escapes the project directory/,
+    )
+    assert.equal(fs.readFileSync(secret, "utf8").includes("Outside Review"), true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readReviewsOffline refuses a .llm-wiki directory symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-review-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-reviews-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "review.json"),
+      JSON.stringify([
+        { id: "other", type: "duplicate", title: "Other Project Review", resolved: false, options: [], createdAt: 1 },
+      ]),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(root, ".llm-wiki"))
+    assert.throws(
+      () => readReviewsOffline(root),
+      /escapes the project directory/,
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readProjectId does not adopt a project.json symlink that points outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-file-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-secret-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    const secret = path.join(outside, "project.json")
+    fs.writeFileSync(secret, JSON.stringify({ id: "stolen-uuid" }))
+    fs.symlinkSync(secret, path.join(root, ".llm-wiki", "project.json"))
+    assert.notEqual(readProjectId(root), "stolen-uuid")
+    assert.equal(readProjectId(root), root)
+    assert.equal(JSON.parse(fs.readFileSync(secret, "utf8")).id, "stolen-uuid")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readProjectId does not adopt a .llm-wiki directory symlink outside the project", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-id-dir-link-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-other-id-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "project.json"),
+      JSON.stringify({ id: "other-project-uuid" }),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(root, ".llm-wiki"))
+    assert.notEqual(readProjectId(root), "other-project-uuid")
+    assert.equal(readProjectId(root), root)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
+test("readProjectsFromAppState does not bind a recents entry to a foreign UUID via .llm-wiki symlink", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const gamma = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-gamma-"))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-id-outside-"))
+  try {
+    fs.mkdirSync(path.join(outside, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(outside, ".llm-wiki", "project.json"),
+      JSON.stringify({ id: "stolen-from-outside" }),
+    )
+    fs.symlinkSync(path.join(outside, ".llm-wiki"), path.join(gamma, ".llm-wiki"))
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+      recentProjects: [
+        { name: "Gamma", path: gamma },
+      ],
+    }, () => {
+      const projects = readProjectsFromAppState()
+      assert.equal(projects.some((project) => project.id === "stolen-from-outside"), false)
+      assert.equal(resolveOfflineProjectPath("stolen-from-outside"), null)
+      const gammaEntry = projects.find((project) => project.path === gamma)
+      assert.equal(gammaEntry?.id, gamma)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(gamma, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  }
+})
+
 test("buildGraphOffline parses frontmatter types and wikilinks", () => {
   const graph = buildGraphOffline(projectDir)
-  const alpha = graph.nodes.find((node) => node.id === "wiki/alpha.md")
-  const beta = graph.nodes.find((node) => node.id === "wiki/beta.md")
+  const alpha = graph.nodes.find((node) => node.id === "alpha")
+  const beta = graph.nodes.find((node) => node.id === "beta")
   assert.ok(alpha && beta)
+  assert.equal(alpha.path, "wiki/alpha.md")
   assert.equal(alpha.label, "Alpha Seite")
   assert.equal(alpha.type, "entity")
   assert.equal(beta.type, "concept")
   assert.equal(graph.edges.length, 1)
   assert.deepEqual(
     [graph.edges[0].source, graph.edges[0].target].sort(),
-    ["wiki/alpha.md", "wiki/beta.md"],
+    ["alpha", "beta"],
   )
   assert.ok((alpha.linkCount ?? 0) > 0)
+})
+
+test("buildGraphOffline counts a repeated wikilink as one unique edge, matching the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-dedup-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[beta]] and again [[beta|Beta alias]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nNo outgoing links.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const beta = graph.nodes.find((node) => node.id === "beta")
+    assert.ok(alpha && beta)
+    assert.equal(graph.edges.length, 1)
+    assert.equal(alpha.linkCount, 1)
+    assert.equal(beta.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline resolves spaced wikilinks onto dashed stems like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-dash-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[Foo Bar]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "foo-bar.md"),
+      "---\ntitle: Foo Bar\ntype: concept\n---\n\nNo outgoing links.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const foo = graph.nodes.find((node) => node.id === "foo-bar")
+    assert.ok(alpha && foo)
+    assert.equal(graph.edges.length, 1)
+    assert.deepEqual(
+      [graph.edges[0].source, graph.edges[0].target].sort(),
+      ["alpha", "foo-bar"],
+    )
+    assert.equal(alpha.linkCount, 1)
+    assert.equal(foo.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline truncates by id order with live-API limit default and clamp", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-limit-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "mu.md"),
+      "---\ntitle: Mu\ntype: entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "zeta.md"),
+      "---\ntitle: Zeta\ntype: entity\n---\n\nSee [[alpha]] and [[mu]].\n",
+    )
+
+    const limited = buildGraphOffline(root, { limit: 2 })
+    assert.deepEqual(limited.nodes.map((node) => node.id), ["alpha", "mu"])
+    assert.equal(limited.edges.length, 0)
+
+    for (let i = 0; i < 201; i++) {
+      const id = `p${String(i).padStart(3, "0")}`
+      fs.writeFileSync(
+        path.join(root, "wiki", `${id}.md`),
+        `---\ntitle: ${id}\ntype: concept\n---\n\nIsolated.\n`,
+      )
+    }
+    const uncapped = buildGraphOffline(root)
+    assert.equal(uncapped.nodes.length, 200)
+    const clamped = buildGraphOffline(root, { limit: 0 })
+    assert.equal(clamped.nodes.length, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline pages with offset and edgeScope like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-page-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(path.join(root, "wiki", "alpha.md"), "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[zeta]].\n")
+    fs.writeFileSync(path.join(root, "wiki", "mu.md"), "---\ntitle: Mu\ntype: entity\n---\n\nNo links.\n")
+    fs.writeFileSync(path.join(root, "wiki", "zeta.md"), "---\ntitle: Zeta\ntype: entity\n---\n\nNo links.\n")
+
+    const first = buildGraphOffline(root, { limit: 2 })
+    assert.deepEqual(first.nodes.map((node) => node.id), ["alpha", "mu"])
+    assert.equal(first.offset, 0)
+    assert.equal(first.limit, 2)
+    assert.equal(first.totalCount, 3)
+    assert.equal(first.hasMore, true)
+    assert.equal(first.edges.length, 0)
+
+    const second = buildGraphOffline(root, { limit: 2, offset: 2 })
+    assert.deepEqual(second.nodes.map((node) => node.id), ["zeta"])
+    assert.equal(second.hasMore, false)
+
+    const filtered = buildGraphOffline(root, { limit: 2, edgeScope: "filtered" })
+    assert.deepEqual(filtered.edges.map((edge) => [edge.source, edge.target]), [["alpha", "zeta"]])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline lowercases types and matches nodeType case-insensitively like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-type-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: Entity\n---\n\nNo links.\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nNo links.\n",
+    )
+
+    const graph = buildGraphOffline(root, { nodeType: "ENTITY" })
+    assert.deepEqual(graph.nodes.map((node) => node.id), ["alpha"])
+    assert.equal(graph.nodes[0]?.type, "entity")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline omits type=query pages like the live API", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-query-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[research-q]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "research-q.md"),
+      "---\ntitle: Deep research\ntype: Query\n---\n\nBack to [[alpha]].\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    assert.deepEqual(graph.nodes.map((node) => node.id).sort(), ["alpha"])
+    assert.equal(graph.edges.length, 0)
+    assert.equal(graph.nodes[0]?.linkCount, 1)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("buildGraphOffline uses live-API file-stem node ids, not wiki-relative paths", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-offline-graph-ids-"))
+  try {
+    fs.mkdirSync(path.join(root, "wiki", "concepts"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "alpha.md"),
+      "---\ntitle: Alpha\ntype: entity\n---\n\nSee [[beta]].\n",
+    )
+    fs.writeFileSync(
+      path.join(root, "wiki", "concepts", "beta.md"),
+      "---\ntitle: Beta\ntype: concept\n---\n\nBack to [[alpha]].\n",
+    )
+    fs.mkdirSync(path.join(root, "wiki", "dup"), { recursive: true })
+    fs.writeFileSync(
+      path.join(root, "wiki", "dup", "alpha.md"),
+      "---\ntitle: Nested Alpha\ntype: entity\n---\n\nDuplicate stem.\n",
+    )
+
+    const graph = buildGraphOffline(root)
+    const ids = graph.nodes.map((node) => node.id).sort()
+    assert.deepEqual(ids, ["alpha", "beta"])
+    const alpha = graph.nodes.find((node) => node.id === "alpha")
+    const beta = graph.nodes.find((node) => node.id === "beta")
+    assert.ok(alpha && beta)
+    assert.ok(alpha.path === "wiki/alpha.md" || alpha.path === "wiki/dup/alpha.md")
+    assert.equal(beta.path, "wiki/concepts/beta.md")
+    assert.equal(graph.edges.length, 1)
+    assert.deepEqual(
+      [graph.edges[0].source, graph.edges[0].target].sort(),
+      ["alpha", "beta"],
+    )
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test("searchOffline scores title matches above body matches", () => {
@@ -125,6 +654,15 @@ test("searchOffline tokenizes CJK queries instead of requiring the whole phrase"
   )
   const result = searchOffline(projectDir, "默会知识")
   assert.ok(result.results.some((hit) => hit.path === "wiki/tacit.md"), "expected CJK bigram hits on a page that never contains the full phrase")
+})
+
+test("searchOffline splits typographic quotes like the desktop tokenizer", () => {
+  fs.writeFileSync(
+    path.join(projectDir, "wiki", "quoted.md"),
+    "---\ntitle: Tacit knowledge\ntype: concept\n---\n\nA note about tacit knowledge.\n",
+  )
+  const result = searchOffline(projectDir, "“tacit knowledge”")
+  assert.ok(result.results.some((hit) => hit.path === "wiki/quoted.md"))
 })
 
 function withAppState<T>(state: unknown, fn: () => T): T {
@@ -213,5 +751,137 @@ test("readProjectsFromAppState uses the registry key as id and includes recentPr
   } finally {
     fs.rmSync(alpha, { recursive: true, force: true })
     fs.rmSync(gamma, { recursive: true, force: true })
+  }
+})
+
+test("readProjectsFromAppState prefers the registry key over a stale nested entry.id", () => {
+  const coding = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-coding-"))
+  const personal = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-personal-"))
+  try {
+    withAppState({
+      lastProject: { id: "uuid-personal", name: "Personal", path: personal },
+      projectRegistry: {
+        "uuid-coding": { id: "uuid-personal", name: "Coding", path: coding, lastOpened: 1 },
+        "uuid-personal": { id: "uuid-personal", name: "Personal", path: personal, lastOpened: 2 },
+      },
+    }, () => {
+      const projects = readProjectsFromAppState()
+      const byId = Object.fromEntries(projects.map((project) => [project.id, project]))
+      assert.equal(byId["uuid-coding"]?.path, coding)
+      assert.equal(byId["uuid-personal"]?.path, personal)
+      assert.equal(resolveOfflineProjectPath("uuid-coding"), coding)
+      assert.equal(resolveOfflineProjectPath("uuid-personal"), personal)
+      assert.equal(findOfflineProject("uuid-personal")?.path, personal)
+    })
+  } finally {
+    fs.rmSync(coding, { recursive: true, force: true })
+    fs.rmSync(personal, { recursive: true, force: true })
+  }
+})
+
+test("offline current follows LLM_WIKI_PROJECT_PATH instead of lastProject", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const beta = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-beta-"))
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+        "bbbb-bbbb": { id: "bbbb-bbbb", name: "Beta", path: beta, lastOpened: 2 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = beta
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "bbbb-bbbb")
+      assert.equal(current?.path, beta)
+      assert.equal(current?.current, true)
+
+      const projects = readProjectsFromAppState()
+      const byId = Object.fromEntries(projects.map((project) => [project.id, project]))
+      assert.equal(byId["bbbb-bbbb"]?.current, true)
+      assert.equal(byId["aaaa-aaaa"]?.current, false)
+      const listedCurrent = projects.find((project) => project.current)
+      assert.equal(listedCurrent?.id, current?.id)
+      assert.equal(listedCurrent?.path, current?.path)
+      assert.equal(projects.filter((project) => project.current).length, 1)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(beta, { recursive: true, force: true })
+  }
+})
+
+test("offline current includes LLM_WIKI_PROJECT_PATH when it is absent from the registry", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const extra = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-env-only-"))
+  try {
+    fs.mkdirSync(path.join(extra, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(extra, ".llm-wiki", "project.json"), JSON.stringify({ id: "eeee-eeee" }))
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = extra
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "eeee-eeee")
+      assert.equal(current?.current, true)
+      assert.equal(current?.path, extra)
+
+      const projects = readProjectsFromAppState()
+      const listedCurrent = projects.find((project) => project.current)
+      assert.equal(listedCurrent?.id, "eeee-eeee")
+      assert.equal(listedCurrent?.path, extra)
+      assert.equal(projects.find((project) => project.id === "aaaa-aaaa")?.current, false)
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
+    fs.rmSync(extra, { recursive: true, force: true })
+  }
+})
+
+test("refreshOfflineProjectIdentity adopts a reminted project.json UUID", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-pin-"))
+  try {
+    fs.mkdirSync(path.join(root, ".llm-wiki"), { recursive: true })
+    fs.writeFileSync(path.join(root, ".llm-wiki", "project.json"), JSON.stringify({ id: "stale-uuid" }))
+    const pinned = { id: "stale-uuid", name: "Pinned", path: root, current: true }
+    fs.writeFileSync(path.join(root, ".llm-wiki", "project.json"), JSON.stringify({ id: "fresh-uuid" }))
+    const refreshed = refreshOfflineProjectIdentity(pinned)
+    assert.equal(refreshed.id, "fresh-uuid")
+    assert.equal(refreshed.path, root)
+    assert.equal(refreshed.name, "Pinned")
+    assert.equal(pinned.id, "stale-uuid")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("refreshOfflineProjectIdentity rejects a vanished pinned path", () => {
+  const missing = path.join(os.tmpdir(), `llm-wiki-missing-pin-${process.pid}-${Date.now()}`)
+  const pinned = { id: "gone-uuid", name: "Gone", path: missing, current: false }
+  assert.throws(() => refreshOfflineProjectIdentity(pinned), /no longer available/)
+})
+
+test("offline current keeps lastProject when LLM_WIKI_PROJECT_PATH is missing", () => {
+  const alpha = fs.mkdtempSync(path.join(os.tmpdir(), "llm-wiki-alpha-"))
+  const missing = path.join(os.tmpdir(), `llm-wiki-missing-${process.pid}-${Date.now()}`)
+  try {
+    withAppState({
+      lastProject: { id: "aaaa-aaaa", name: "Alpha", path: alpha },
+      projectRegistry: {
+        "aaaa-aaaa": { id: "aaaa-aaaa", name: "Alpha", path: alpha, lastOpened: 1 },
+      },
+    }, () => {
+      process.env.LLM_WIKI_PROJECT_PATH = missing
+      const current = findOfflineProject("current")
+      assert.equal(current?.id, "aaaa-aaaa")
+      assert.equal(current?.path, alpha)
+      assert.equal(current?.current, true)
+      assert.equal(readProjectsFromAppState().find((project) => project.current)?.id, "aaaa-aaaa")
+    })
+  } finally {
+    fs.rmSync(alpha, { recursive: true, force: true })
   }
 })

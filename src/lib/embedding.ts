@@ -25,7 +25,7 @@ import { readFile, listDirectory } from "@/commands/fs"
 import { invoke } from "@tauri-apps/api/core"
 import type { EmbeddingConfig } from "@/stores/wiki-store"
 import type { FileNode } from "@/types/wiki"
-import { normalizePath } from "@/lib/path-utils"
+import { getRelativePath, normalizePath } from "@/lib/path-utils"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
 import { parseFrontmatter } from "@/lib/frontmatter"
 import { clampUserConcurrency } from "@/lib/concurrency-limits"
@@ -527,6 +527,53 @@ function throwEmbeddingReindexError(projectPath: string, message: string): never
   throw new Error(message)
 }
 
+function displayProjectRelativePath(projectPath: string, filePath: string): string {
+  const project = normalizePath(projectPath)
+  const file = normalizePath(filePath)
+  const prefix = project.endsWith("/") ? project : `${project}/`
+  return file.startsWith(prefix) ? file.slice(prefix.length) : file
+}
+
+const RESERVED_WIKI_ROOT_STEMS = new Set(["index", "log", "overview", "purpose", "schema"])
+
+function isReservedWikiRootPage(projectPath: string, filePath: string, stem: string): boolean {
+  if (!RESERVED_WIKI_ROOT_STEMS.has(stem)) return false
+  return getRelativePath(filePath, projectPath).replace(/\.md$/i, ".md") === `wiki/${stem}.md`
+}
+
+function collectDuplicatePageStems(
+  files: { id: string; path: string }[],
+): Array<{ id: string; paths: string[] }> {
+  const byId = new Map<string, string[]>()
+  for (const file of files) {
+    const paths = byId.get(file.id)
+    if (paths) paths.push(file.path)
+    else byId.set(file.id, [file.path])
+  }
+  return [...byId.entries()]
+    .filter(([, paths]) => paths.length > 1)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, paths]) => ({
+      id,
+      paths: [...paths].sort((left, right) => left.localeCompare(right)),
+    }))
+}
+
+function formatDuplicatePageStemError(
+  projectPath: string,
+  duplicates: Array<{ id: string; paths: string[] }>,
+): string {
+  const details = duplicates
+    .map((dup) => {
+      const shown = dup.paths
+        .map((path) => displayProjectRelativePath(projectPath, path))
+        .join(", ")
+      return `"${dup.id}" (${shown})`
+    })
+    .join("; ")
+  return `Duplicate wiki page stem${duplicates.length > 1 ? "s" : ""} ${details} share one vector page_id. Rename one of the pages before re-index.`
+}
+
 async function parallelForEach<T>(
   items: T[],
   rawLimit: number | undefined,
@@ -573,7 +620,9 @@ async function preparePageEmbeddingRowsWithRetry(
  * Embed every wiki content page that isn't already indexed (or re-embed
  * all when `force === true`). Driven from Settings → Embedding or on
  * first enable. Skips structural pages (index / log / overview /
- * purpose / schema) — they're aggregate views, not retrieval targets.
+ * purpose / schema) only at the wiki root — they're aggregate views,
+ * not retrieval targets. Nested pages with the same filename remain
+ * indexable.
  */
 export async function embedAllPages(
   projectPath: string,
@@ -607,13 +656,20 @@ export async function embedAllPages(
         walk(node.children)
       } else if (!node.is_dir && /\.md$/i.test(node.name)) {
         const stem = node.name.replace(/\.md$/i, "")
-        if (!["index", "log", "overview", "purpose", "schema"].includes(stem)) {
-          mdFiles.push({ id: wikiPageIdFromPath(pp, node.path), path: node.path })
+        // Only the reserved files at the wiki root are excluded; a content
+        // page such as `wiki/concepts/index.md` is still indexed.
+        const id = wikiPageIdFromPath(pp, node.path)
+        if (id && !isReservedWikiRootPage(pp, node.path, stem)) {
+          mdFiles.push({ id, path: node.path })
         }
       }
     }
   }
   walk(tree)
+  const duplicateStems = collectDuplicatePageStems(mdFiles)
+  if (duplicateStems.length > 0) {
+    throwEmbeddingReindexError(pp, formatDuplicatePageStemError(pp, duplicateStems))
+  }
   const scheduleEmbedding = createAsyncLimiter(cfg.concurrency)
   // LanceDB page replacement is intentionally serialized. The configured
   // concurrency applies to outbound embedding HTTP, not database writers.

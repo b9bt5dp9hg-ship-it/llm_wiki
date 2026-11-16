@@ -1,9 +1,11 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Clock3, RotateCcw, X } from "lucide-react"
-import { listFileHistory, restoreFileHistory, type FileHistoryEntry } from "@/commands/fs"
+import type { FileHistoryEntry } from "@/commands/fs"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { useWikiStore } from "@/stores/wiki-store"
+import { trapTabInContainer } from "@/components/search/search-a11y"
+import { createFileHistorySession } from "@/lib/file-history-session"
 
 export function FileHistoryButton({ filePath, currentContent }: { filePath: string; currentContent: string }) {
   const { t } = useTranslation()
@@ -13,15 +15,44 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   const [entries, setEntries] = useState<FileHistoryEntry[]>([])
   const [selected, setSelected] = useState<FileHistoryEntry | null>(null)
   const [loading, setLoading] = useState(false)
+  const historyDialogRef = useRef<HTMLDivElement>(null)
+  const historySessionRef = useRef(createFileHistorySession())
+  useEffect(() => {
+    historySessionRef.current.invalidate()
+    setOpen(false)
+    setEntries([])
+    setSelected(null)
+    setLoading(false)
+  }, [filePath, project?.id])
+  useEffect(() => {
+    if (!open) return
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      historyDialogRef.current?.querySelector<HTMLElement>("button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
+    }
+  }, [open])
   if (!project) return null
 
   const show = async () => {
     setOpen(true)
     setLoading(true)
+    const session = historySessionRef.current
+    const pending = session.list(project.path, filePath)
+    const token = session.generation
     try {
-      setEntries(await listFileHistory(project.path, filePath))
+      const outcome = await pending
+      if (outcome.status === "applied") {
+        setEntries(outcome.entries)
+        setSelected(null)
+      }
     } finally {
-      setLoading(false)
+      if (session.isCurrent(token)) setLoading(false)
     }
   }
   const diff = selected ? summarizeAgentFileChange({
@@ -30,14 +61,28 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
   }).diff : ""
 
   return <>
-    <button type="button" onClick={() => void show()} className="absolute right-3 top-3 z-20 rounded-md border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:text-foreground" title={t("preview.history")}><Clock3 className="h-4 w-4" /></button>
-    {open && <div className="absolute inset-0 z-40 flex bg-background">
+    <button type="button" onClick={() => void show()} className="absolute right-3 top-3 z-20 rounded-md border bg-background/90 p-1.5 text-muted-foreground shadow-sm hover:text-foreground" title={t("preview.history")} aria-label={t("preview.history")}><Clock3 className="h-4 w-4" /></button>
+    {open && <div
+      ref={historyDialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="file-history-title"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault()
+          setOpen(false)
+          return
+        }
+        trapTabInContainer(event.nativeEvent, event.currentTarget)
+      }}
+      className="absolute inset-0 z-40 flex bg-background"
+    >
       <aside className="w-72 shrink-0 border-r p-3">
-        <div className="mb-3 flex items-center justify-between"><strong className="text-sm">{t("preview.history")}</strong><button type="button" onClick={() => setOpen(false)}><X className="h-4 w-4" /></button></div>
+        <div className="mb-3 flex items-center justify-between"><strong id="file-history-title" className="text-sm">{t("preview.history")}</strong><button type="button" aria-label={t("common.close")} onClick={() => setOpen(false)}><X className="h-4 w-4" /></button></div>
         <div className="space-y-1 overflow-auto">
           {loading && <p className="text-xs text-muted-foreground">{t("preview.historyLoading")}</p>}
           {!loading && entries.length === 0 && <p className="text-xs text-muted-foreground">{t("preview.historyEmpty")}</p>}
-          {entries.map((entry) => <button key={entry.id} type="button" onClick={() => setSelected(entry)} className={`w-full rounded border px-2 py-2 text-left text-xs ${selected?.id === entry.id ? "border-primary bg-primary/5" : "border-transparent hover:bg-muted"}`}>
+          {entries.map((entry) => <button key={entry.id} type="button" aria-pressed={selected?.id === entry.id} onClick={() => setSelected(entry)} className={`w-full rounded border px-2 py-2 text-left text-xs ${selected?.id === entry.id ? "border-primary bg-primary/5" : "border-transparent hover:bg-muted"}`}>
             <div className="font-medium">{entry.author} · {entry.tool}</div>
             <div className="mt-1 text-[10px] text-muted-foreground">{new Date(entry.timestamp).toLocaleString()}</div>
           </button>)}
@@ -45,8 +90,9 @@ export function FileHistoryButton({ filePath, currentContent }: { filePath: stri
       </aside>
       <main className="min-w-0 flex-1 overflow-auto p-4">
         {selected ? <><div className="mb-3 flex justify-end"><button type="button" className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted" onClick={async () => {
-          const content = await restoreFileHistory(project.path, filePath, selected.id)
-          openFileInPreview(filePath, content)
+          const outcome = await historySessionRef.current.restore(project.path, filePath, selected.id)
+          if (outcome.status === "stale") return
+          openFileInPreview(filePath, outcome.content)
           setOpen(false)
         }}><RotateCcw className="h-3.5 w-3.5" />{t("preview.historyRestore")}</button></div><pre className="whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">{diff}</pre></> : <div className="grid h-full place-items-center text-sm text-muted-foreground">{t("preview.historySelect")}</div>}
       </main>

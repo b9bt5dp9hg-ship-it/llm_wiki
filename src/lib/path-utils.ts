@@ -75,3 +75,133 @@ export function isAbsolutePath(p: string): boolean {
   if (p.startsWith("\\\\") || p.startsWith("//")) return true
   return false
 }
+
+/**
+ * Collapse `.` and `..` lexically without touching the filesystem.
+ * Absolute paths clamp at the root; relative paths may keep a leading `..`.
+ */
+export function collapsePathSegments(p: string): string {
+  const normalized = normalizePath(p)
+  if (!normalized) return ""
+  const drive = /^[A-Za-z]:/.exec(normalized)?.[0] ?? ""
+  const body = drive ? normalized.slice(drive.length) : normalized
+  const isAbsolute = body.startsWith("/") || normalized.startsWith("//")
+  const out: string[] = []
+  for (const seg of body.split("/")) {
+    if (seg === "" || seg === ".") continue
+    if (seg === "..") {
+      if (out.length > 0) out.pop()
+      else if (!isAbsolute) out.push("..")
+    } else {
+      out.push(seg)
+    }
+  }
+  const joined = out.join("/")
+  if (drive) return `${drive}/${joined}`
+  if (normalized.startsWith("//")) return `//${joined}`
+  if (body.startsWith("/")) return `/${joined}`
+  return joined
+}
+
+function isPathInsideRoot(candidate: string, root: string): boolean {
+  const collapsedCandidate = collapsePathSegments(candidate)
+  const collapsedRoot = collapsePathSegments(root).replace(/\/+$/, "")
+  const candidateKey = caseFoldPath(collapsedCandidate)
+  const rootKey = caseFoldPath(collapsedRoot)
+  return candidateKey === rootKey || candidateKey.startsWith(`${rootKey}/`)
+}
+
+/**
+ * Resolve a wiki file path so review/lint actions cannot leave `<project>/wiki/`.
+ * Relative targets are joined under `wiki/`. After collapsing `..`, the result
+ * must be a markdown file strictly inside that directory — not the wiki root
+ * and not an extension-less directory that `delete_file` would remove recursively.
+ */
+export function confineWikiFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const wikiRoot = `${project}/wiki`
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : `${wikiRoot}/${raw}`
+  const collapsed = collapsePathSegments(absolute)
+  if (!isPathInsideRoot(collapsed, wikiRoot)) return null
+  if (caseFoldPath(collapsePathSegments(wikiRoot)) === caseFoldPath(collapsed)) return null
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === ".." || !/\.md$/i.test(name)) return null
+  return collapsed
+}
+
+function previewRootForRelativePath(project: string, raw: string): string {
+  if (raw.startsWith("wiki/") || raw.startsWith("raw/")) {
+    return `${project}/${raw}`
+  }
+  return `${project}/wiki/${raw}`
+}
+
+/**
+ * Resolve a review/lint preview path so `open:` cannot read outside
+ * `<project>/wiki/` or `<project>/raw/`. Relative targets join under `wiki/`
+ * unless they already start with `wiki/` or `raw/`. After collapsing `..`,
+ * `.llm-wiki` and other project-root files stay unreachable.
+ */
+export function confinePreviewFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : previewRootForRelativePath(project, raw)
+  const collapsed = collapsePathSegments(absolute)
+  const wikiRoot = `${project}/wiki`
+  const rawRoot = `${project}/raw`
+  if (!isPathInsideRoot(collapsed, wikiRoot) && !isPathInsideRoot(collapsed, rawRoot)) {
+    return null
+  }
+  if (caseFoldPath(collapsePathSegments(wikiRoot)) === caseFoldPath(collapsed)) return null
+  if (caseFoldPath(collapsePathSegments(rawRoot)) === caseFoldPath(collapsed)) return null
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === "..") return null
+  return collapsed
+}
+
+/**
+ * Resolve a chat/workspace file so citations, generated outputs, and attached
+ * context files cannot read outside `<project>/`. Relative targets join at the
+ * project root (wiki, raw, agent-workspace, schema). After collapsing `..`,
+ * `.llm-wiki` stays unreachable.
+ */
+export function confineProjectFilePath(projectPath: string, targetPath: string): string | null {
+  if (typeof targetPath !== "string") return null
+  const trimmed = targetPath.trim()
+  if (!trimmed || /[\x00-\x1f]/.test(trimmed)) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  if (!project) return null
+  const raw = normalizePath(trimmed)
+  const absolute = isAbsolutePath(raw) ? raw : `${project}/${raw.replace(/^\/+/, "")}`
+  const collapsed = collapsePathSegments(absolute)
+  if (!isPathInsideRoot(collapsed, project)) return null
+  if (caseFoldPath(collapsePathSegments(project)) === caseFoldPath(collapsed)) return null
+  const relative = getRelativePath(collapsed, project)
+  if (
+    relative.split("/").some(
+      (part) => !part || part === "." || part === ".." || part.toLowerCase() === ".llm-wiki",
+    )
+  ) {
+    return null
+  }
+  const name = getFileName(collapsed)
+  if (!name || name === "." || name === "..") return null
+  return collapsed
+}
+
+/** Confined preview path plus an optional `.md` sibling, matching prior open: lookup. */
+export function previewFilePathCandidates(projectPath: string, targetPath: string): string[] {
+  const confined = confinePreviewFilePath(projectPath, targetPath)
+  if (!confined) return []
+  if (/\.md$/i.test(confined)) return [confined]
+  return [confined, `${confined}.md`]
+}

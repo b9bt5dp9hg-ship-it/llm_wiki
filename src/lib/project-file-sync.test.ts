@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => {
     emit: (event: string, payload: unknown) => listeners[event]?.({ payload }),
     stopProjectFileWatcher: vi.fn(async () => undefined),
     invalidateProjectFileSnapshotPaths: vi.fn(async () => undefined),
+    retryFileChangeTask: vi.fn(async (): Promise<import("@/commands/file-sync").FileChangeQueue> => ({ version: 1, tasks: [] })),
+    ignoreFileChangeTask: vi.fn(async (): Promise<import("@/commands/file-sync").FileChangeQueue> => ({ version: 1, tasks: [] })),
     rescanProjectFiles: vi.fn(async (projectId: string): Promise<{
       queue: {
         version: number
@@ -130,6 +132,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@/commands/file-sync", () => ({
   invalidateProjectFileSnapshotPaths: mocks.invalidateProjectFileSnapshotPaths,
   rescanProjectFiles: mocks.rescanProjectFiles,
+  retryFileChangeTask: mocks.retryFileChangeTask,
+  ignoreFileChangeTask: mocks.ignoreFileChangeTask,
   startProjectFileWatcher: mocks.startProjectFileWatcher,
   stopProjectFileWatcher: mocks.stopProjectFileWatcher,
 }))
@@ -233,6 +237,76 @@ describe("project file sync", () => {
       maxContextSize: 128000,
     })
     useFileSyncStore.getState().clear()
+  })
+
+  it("does not publish a retried file-change queue after switching projects", async () => {
+    const { retryProjectFileChangeTask } = await import("@/lib/project-file-sync")
+    const { useFileSyncStore } = await import("@/stores/file-sync-store")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    mocks.retryFileChangeTask.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      return {
+        version: 1,
+        tasks: [{
+          id: "stale",
+          projectId: "A",
+          path: "raw/sources/stale.md",
+          kind: "modified" as const,
+          status: "pending" as const,
+          createdAt: 1,
+          updatedAt: 1,
+          retryCount: 1,
+          needsRerun: false,
+        }],
+      }
+    })
+
+    await retryProjectFileChangeTask(projectA, "stale")
+
+    expect(useFileSyncStore.getState().tasks).toEqual([])
+  })
+
+  it("does not publish an ignored file-change queue after switching projects", async () => {
+    const { ignoreProjectFileChangeTask } = await import("@/lib/project-file-sync")
+    const { useFileSyncStore } = await import("@/stores/file-sync-store")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    mocks.ignoreFileChangeTask.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      return { version: 1, tasks: [] }
+    })
+
+    await ignoreProjectFileChangeTask(projectA, "stale")
+
+    expect(useFileSyncStore.getState().tasks).toEqual([])
+  })
+
+  it("does not apply a refreshed selection after switching projects", async () => {
+    const { refreshAfterFileChanges } = await import("@/lib/project-file-sync")
+    const { useWikiStore } = await import("@/stores/wiki-store")
+    const projectA = { id: "A", name: "A", path: "/tmp/a" }
+    const projectB = { id: "B", name: "B", path: "/tmp/b" }
+    useWikiStore.getState().setProject(projectA)
+    useWikiStore.getState().setSelectedFile("/tmp/a/wiki/a.md")
+    useWikiStore.getState().setFileContent("A before")
+    mocks.readFile.mockResolvedValue("stale A")
+    mocks.listDirectory.mockImplementationOnce(async () => {
+      useWikiStore.getState().setProject(projectB)
+      useWikiStore.getState().setSelectedFile("/tmp/b/wiki/b.md")
+      useWikiStore.getState().setFileContent("B current")
+      return []
+    })
+
+    await refreshAfterFileChanges(projectA, ["wiki/a.md"])
+
+    expect(mocks.readFile).not.toHaveBeenCalled()
+    expect(useWikiStore.getState().selectedFile).toBe("/tmp/b/wiki/b.md")
+    expect(useWikiStore.getState().fileContent).toBe("B current")
   })
 
   it("does not apply a stale start result after the active project changes", async () => {

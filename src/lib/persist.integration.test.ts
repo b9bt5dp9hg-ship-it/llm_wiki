@@ -24,6 +24,10 @@ import {
   loadChatHistory,
   saveChatPreferences,
   loadChatPreferences,
+  isSafeConversationId,
+  isCanonicalConversationId,
+  conversationChatFilePath,
+  deletePersistedConversation,
 } from "./persist"
 
 let tmp: { path: string; cleanup: () => Promise<void> }
@@ -170,6 +174,25 @@ describe("lint persistence — round-trip", () => {
     await writeFileRaw(`${tmp.path}/.llm-wiki/lint.json`, "{not valid json")
     const loaded = await loadLintItems(tmp.path)
     expect(loaded).toEqual([])
+  })
+
+  it("returns empty array when lint.json is valid JSON but not an array", async () => {
+    await writeFileRaw(`${tmp.path}/.llm-wiki/lint.json`, JSON.stringify({ items: [makeLint()] }))
+    const loaded = await loadLintItems(tmp.path)
+    expect(loaded).toEqual([])
+  })
+
+  it("drops malformed lint entries and keeps valid ones", async () => {
+    await writeFileRaw(`${tmp.path}/.llm-wiki/lint.json`, JSON.stringify([
+      makeLint({ id: "lint-keep", page: "ok.md" }),
+      null,
+      { id: 3, page: "nope.md" },
+      "not-an-item",
+      makeLint({ id: "lint-keep-2", page: "ok-2.md", type: "broken-link", severity: "warning" }),
+    ]))
+    const loaded = await loadLintItems(tmp.path)
+    expect(loaded.map((item) => item.id)).toEqual(["lint-keep", "lint-keep-2"])
+    expect(loaded[0].page).toBe("ok.md")
   })
 
   it("preserves all LintItem fields through JSON round-trip including affectedPages", async () => {
@@ -388,6 +411,62 @@ describe("chat persistence — round-trip (new format)", () => {
     expect(loaded.messages).toHaveLength(1)
   })
 
+  it("does not resurrect a dropped conversation from leftover chat files after save", async () => {
+    const convs = [makeConv("c1", "Keep"), makeConv("c2", "Drop")]
+    const msgs = [
+      makeMsg("m1", "c1", "keep me"),
+      makeMsg("m2", "c2", "delete me"),
+    ]
+    await saveChatHistory(tmp.path, convs, msgs)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c2.json`)).toBe(true)
+
+    await saveChatHistory(tmp.path, [convs[0]], [msgs[0]])
+
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(true)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c2.json`)).toBe(false)
+
+    // If the index is later emptied, orphan recovery may rebuild kept
+    // conversations from remaining files — but not the dropped one.
+    await writeFileRaw(`${tmp.path}/.llm-wiki/conversations.json`, "[]")
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(JSON.stringify(loaded)).not.toContain("delete me")
+  })
+
+  it("prunes all chat files when the conversation list is empty", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "gone")])
+    await saveChatHistory(tmp.path, [], [])
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([])
+    expect(loaded.messages).toEqual([])
+  })
+
+  it("does not resurrect a deleted chat from a nested leftover under chats/", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "canonical")])
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/archive/c1.json`,
+      JSON.stringify([makeMsg("m-nested", "c1", "nested-resurrect")]),
+    )
+
+    await saveChatHistory(tmp.path, [], [])
+
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/archive/c1.json`)).toBe(true)
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([])
+    expect(loaded.messages).toEqual([])
+    expect(JSON.stringify(loaded)).not.toContain("nested-resurrect")
+  })
+
+  it("deletePersistedConversation removes the chat file and ignores a missing file", async () => {
+    await saveChatHistory(tmp.path, [makeConv("c1")], [makeMsg("m1", "c1", "bye")])
+    await deletePersistedConversation(tmp.path, "c1")
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(false)
+    await expect(deletePersistedConversation(tmp.path, "c1")).resolves.toBeUndefined()
+  })
+
   it("recovers conversations from orphan chat files when conversation index was overwritten empty", async () => {
     await writeFileRaw(`${tmp.path}/.llm-wiki/conversations.json`, "[]")
     await writeFileRaw(
@@ -478,6 +557,28 @@ describe("chat persistence — legacy format fallback", () => {
     expect(loaded.messages).toHaveLength(1)
   })
 
+  it("does not load traversal or non-canonical ids from legacy combined chat-history.json", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chat-history.json`,
+      JSON.stringify({
+        conversations: [makeConv("../secrets"), makeConv("c1"), makeConv("C1")],
+        messages: [
+          { ...makeMsg("m-bad", "../secrets"), content: "legacy-exfil" },
+          makeMsg("m-ok", "c1"),
+          { ...makeMsg("m-case", "C1"), content: "legacy-merged" },
+          { ...makeMsg("m-orphan", "../../pwned"), content: "legacy-escaped" },
+        ],
+      }),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages.map((message) => message.conversationId)).toEqual(["c1"])
+    expect(JSON.stringify(loaded)).not.toContain("legacy-exfil")
+    expect(JSON.stringify(loaded)).not.toContain("legacy-merged")
+    expect(JSON.stringify(loaded)).not.toContain("legacy-escaped")
+  })
+
   it("new format wins over legacy when both exist", async () => {
     await writeFileRaw(
       `${tmp.path}/.llm-wiki/chat-history.json`,
@@ -491,6 +592,164 @@ describe("chat persistence — legacy format fallback", () => {
 
     const loaded = await loadChatHistory(tmp.path)
     expect(loaded.conversations[0].id).toBe("new")
+  })
+})
+
+describe("isSafeConversationId", () => {
+  it("accepts generated, legacy, and test conversation ids", () => {
+    expect(isSafeConversationId("conv_1710000000000_abc123")).toBe(true)
+    expect(isSafeConversationId("c1")).toBe(true)
+    expect(isSafeConversationId("default")).toBe(true)
+    expect(isSafeConversationId("new")).toBe(true)
+  })
+
+  it("rejects path traversal, separators, reserved names, and overlong ids", () => {
+    expect(isSafeConversationId("../secrets")).toBe(false)
+    expect(isSafeConversationId("..\\outside")).toBe(false)
+    expect(isSafeConversationId("c1/../../pwned")).toBe(false)
+    expect(isSafeConversationId("/tmp/x")).toBe(false)
+    expect(isSafeConversationId("CON")).toBe(false)
+    expect(isSafeConversationId("")).toBe(false)
+    expect(isSafeConversationId("a".repeat(129))).toBe(false)
+    expect(conversationChatFilePath("/proj", "../secrets")).toBeNull()
+    expect(conversationChatFilePath("/proj", "c1")).toBe("/proj/.llm-wiki/chats/c1.json")
+  })
+
+  it("maps case-variant conversation ids onto one confined chat filename", () => {
+    expect(isSafeConversationId("C1")).toBe(true)
+    expect(isCanonicalConversationId("C1")).toBe(false)
+    expect(isCanonicalConversationId("c1")).toBe(true)
+    expect(conversationChatFilePath("/proj", "C1")).toBe("/proj/.llm-wiki/chats/c1.json")
+    expect(conversationChatFilePath("/proj", "c1")).toBe(
+      conversationChatFilePath("/proj", "C1"),
+    )
+  })
+})
+
+describe("chat persistence — conversation id path confinement", () => {
+  function makeConv(id: string, title: string = "conv"): Conversation {
+    return { id, title, createdAt: 0, updatedAt: 1 }
+  }
+  function makeMsg(id: string, convId: string, content: string): DisplayMessage {
+    return { id, role: "user", content, timestamp: 0, conversationId: convId }
+  }
+
+  it("does not write chat files outside .llm-wiki/chats for traversal conversation ids", async () => {
+    await saveChatHistory(
+      tmp.path,
+      [makeConv("../secrets"), makeConv("c1"), makeConv("..\\outside")],
+      [
+        makeMsg("m-bad", "../secrets", "exfil"),
+        makeMsg("m-ok", "c1", "safe"),
+        makeMsg("m-win", "..\\outside", "exfil-win"),
+        makeMsg("m-orphan", "../../pwned", "escaped"),
+      ],
+    )
+
+    expect(await fileExists(`${tmp.path}/.llm-wiki/chats/c1.json`)).toBe(true)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/secrets.json`)).toBe(false)
+    expect(await fileExists(`${tmp.path}/.llm-wiki/outside.json`)).toBe(false)
+    expect(await fileExists(`${tmp.path}/pwned.json`)).toBe(false)
+
+    const index = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/conversations.json`),
+    ) as Conversation[]
+    expect(index.map((conversation) => conversation.id)).toEqual(["c1"])
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages.map((message) => message.conversationId)).toEqual(["c1"])
+    expect(JSON.stringify(loaded.messages)).not.toContain("exfil")
+  })
+
+  it("does not read files outside .llm-wiki/chats for traversal conversation ids", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/secret.json`,
+      JSON.stringify([makeMsg("m-leak", "../secret", "leaked-payload")]),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/conversations.json`,
+      JSON.stringify([makeConv("../secret"), makeConv("c1")]),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/c1.json`,
+      JSON.stringify([makeMsg("m2", "c1", "ok")]),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(JSON.stringify(loaded)).not.toContain("leaked-payload")
+  })
+
+  it("binds recovered orphan messages to the file stem, not a traversal payload id", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/c1.json`,
+      JSON.stringify([makeMsg("m1", "../secrets", "hello")]),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages).toHaveLength(1)
+    expect(loaded.messages[0].conversationId).toBe("c1")
+  })
+
+  it("does not let case-variant conversation ids overwrite each other on disk", async () => {
+    await saveChatHistory(
+      tmp.path,
+      [makeConv("c1", "lower"), makeConv("C1", "upper")],
+      [
+        makeMsg("m-lower", "c1", "from-c1"),
+        makeMsg("m-upper", "C1", "from-C1"),
+      ],
+    )
+
+    const index = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/conversations.json`),
+    ) as Conversation[]
+    expect(index.map((conversation) => conversation.id)).toEqual(["c1"])
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages.map((message) => message.content)).toEqual(["from-c1"])
+    expect(JSON.stringify(loaded)).not.toContain("from-C1")
+  })
+
+  it("does not merge messages from a non-canonical C1 into c1", async () => {
+    await saveChatHistory(
+      tmp.path,
+      [makeConv("c1", "kept"), makeConv("C1", "injected")],
+      [
+        makeMsg("m-kept", "c1", "kept-body"),
+        makeMsg("m-injected", "C1", "injected-body"),
+      ],
+    )
+
+    const chatFile = JSON.parse(
+      await readFileRaw(`${tmp.path}/.llm-wiki/chats/c1.json`),
+    ) as DisplayMessage[]
+    expect(chatFile.map((message) => message.content)).toEqual(["kept-body"])
+    expect(JSON.stringify(chatFile)).not.toContain("injected-body")
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations).toEqual([expect.objectContaining({ id: "c1", title: "kept" })])
+    expect(loaded.messages.map((message) => message.content)).toEqual(["kept-body"])
+    expect(JSON.stringify(loaded)).not.toContain("injected-body")
+  })
+
+  it("dedupes a poisoned index that lists both c1 and C1", async () => {
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/conversations.json`,
+      JSON.stringify([makeConv("c1"), makeConv("C1")]),
+    )
+    await writeFileRaw(
+      `${tmp.path}/.llm-wiki/chats/c1.json`,
+      JSON.stringify([makeMsg("m1", "c1", "kept")]),
+    )
+
+    const loaded = await loadChatHistory(tmp.path)
+    expect(loaded.conversations.map((conversation) => conversation.id)).toEqual(["c1"])
+    expect(loaded.messages).toHaveLength(1)
+    expect(loaded.messages[0]).toMatchObject({ conversationId: "c1", content: "kept" })
   })
 })
 

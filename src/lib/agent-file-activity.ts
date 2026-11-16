@@ -1,4 +1,6 @@
+import { deleteFile, readFile, writeFile } from "@/commands/fs"
 import type { ChatAgentFileChange } from "@/lib/chat-agent-types"
+import { confineProjectFilePath } from "@/lib/path-utils"
 
 const MAX_DIFF_LINES = 240
 const MAX_DIFF_CHARS = 48_000
@@ -83,6 +85,35 @@ export interface AgentFileChangeGroup {
   edits: ChatAgentFileChange[]
   additions: number
   deletions: number
+}
+
+/**
+ * Roll back one Agent file edit. Chat JSON and in-memory activity rows are
+ * not a trusted writer: a poisoned `path` must not read, write, or delete
+ * outside the open project (absolute files, `..`, `.llm-wiki`).
+ */
+export async function undoAgentFileChange(
+  projectPath: string,
+  change: ChatAgentFileChange,
+): Promise<void> {
+  if (change.beforeContent === undefined || change.afterContent === undefined) {
+    throw new Error("Undo snapshot unavailable")
+  }
+  const confined = confineProjectFilePath(projectPath, change.path)
+  if (!confined) {
+    throw new Error("File path is outside the project")
+  }
+  const currentContent = await readFile(confined).catch(() => null)
+  if (currentContent !== change.afterContent) {
+    throw new Error("Undo conflict")
+  }
+  if (change.operation === "created" && change.beforeContent === null) {
+    await deleteFile(confined)
+    return
+  }
+  if (typeof change.beforeContent === "string") {
+    await writeFile(confined, change.beforeContent)
+  }
 }
 
 /** Preserve first-seen file and edit order so the activity timeline matches

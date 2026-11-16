@@ -32,6 +32,7 @@ import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import type { ReviewItem } from "@/stores/review-store"
+import { createDeferred } from "@/test-helpers/deferred"
 
 function setProjectPath(path: string | null): void {
   useWikiStore.setState({ project: path ? ({ id: "p", name: "p", path } as never) : null })
@@ -87,9 +88,9 @@ describe("auto-save project-switch guard", () => {
     expect(saveLintItems).not.toHaveBeenCalled()
   })
 
-  it("resumes persisting after resumeAutoSave", () => {
+  it("resumes persisting after resumeAutoSave", async () => {
     setProjectPath("/proj/B")
-    flushAndSuspendAutoSave()
+    await flushAndSuspendAutoSave()
     resumeAutoSave()
 
     useReviewStore.setState({ items: [review("b1")] })
@@ -151,6 +152,37 @@ describe("auto-save project-switch guard", () => {
     expect(saveReviewItems).toHaveBeenCalled()
   })
 
+  it("throws and keeps auto-save armed when a flush persist fails", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("a1")] })
+    saveReviewItems.mockRejectedValueOnce(new Error("disk full"))
+
+    await expect(flushAndSuspendAutoSave()).rejects.toThrow(/disk full/)
+
+    saveReviewItems.mockClear()
+    saveReviewItems.mockResolvedValue(undefined)
+
+    // The outgoing project is still open. A failed flush must not look like
+    // success (so a switcher can wipe memory) and must not leave auto-save
+    // suspended against that live project.
+    useReviewStore.setState({ items: [review("a1"), review("a2")] })
+    vi.runAllTimers()
+
+    expect(saveReviewItems).toHaveBeenCalledWith("/proj/A", [review("a1"), review("a2")])
+  })
+
+  it("does not run the switch action when flush fails", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("a1")] })
+    saveReviewItems.mockRejectedValueOnce(new Error("disk full"))
+    const action = vi.fn(async () => "opened")
+    const onFailure = vi.fn()
+
+    await expect(runWithSuspendedAutoSave(action, onFailure)).rejects.toThrow(/disk full/)
+    expect(action).not.toHaveBeenCalled()
+    expect(onFailure).not.toHaveBeenCalled()
+  })
+
   it("persists chat search preferences on flush", async () => {
     setProjectPath("/proj/A")
     useChatStore.setState({
@@ -172,5 +204,62 @@ describe("auto-save project-switch guard", () => {
       selectedSkills: ["reviewer"],
       disabledSkills: [],
     })
+  })
+
+  it("does not persist a pre-stream chat snapshot after the chat is deleted during streaming", () => {
+    setProjectPath("/proj/A")
+    const doomed = { id: "c1", title: "doomed", createdAt: 1, updatedAt: 1 }
+    useChatStore.setState({
+      conversations: [doomed],
+      messages: [{
+        id: "m1",
+        role: "user",
+        content: "hi",
+        timestamp: 1,
+        conversationId: "c1",
+      }],
+      isStreaming: false,
+    })
+
+    // Streaming starts: the subscribe handler currently returns before
+    // clearing the already-queued 2s save of `doomed`.
+    useChatStore.setState({ isStreaming: true })
+    useChatStore.setState({
+      conversations: [],
+      messages: [],
+    })
+
+    vi.runAllTimers()
+
+    expect(saveChatHistory).not.toHaveBeenCalled()
+    expect(saveChatPreferences).not.toHaveBeenCalled()
+  })
+
+  it("does not let an in-flight review write overwrite the flush snapshot", async () => {
+    setProjectPath("/proj/A")
+    useReviewStore.setState({ items: [review("old")] })
+
+    const inFlight = createDeferred<void>()
+    saveReviewItems.mockImplementationOnce(() => inFlight.promise)
+    vi.runAllTimers()
+    expect(saveReviewItems).toHaveBeenCalledTimes(1)
+    expect(saveReviewItems).toHaveBeenCalledWith("/proj/A", [review("old")])
+
+    useReviewStore.setState({ items: [review("new")] })
+    let flushSettled = false
+    const flushPromise = flushAndSuspendAutoSave().then(() => {
+      flushSettled = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(flushSettled).toBe(false)
+    expect(saveReviewItems).toHaveBeenCalledTimes(1)
+
+    inFlight.resolve()
+    await flushPromise
+
+    expect(flushSettled).toBe(true)
+    expect(saveReviewItems).toHaveBeenLastCalledWith("/proj/A", [review("new")])
   })
 })

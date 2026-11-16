@@ -4,13 +4,17 @@ import { invoke } from "@tauri-apps/api/core"
 import { disable as disableAutostart, enable as enableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart"
 import i18n from "@/i18n"
 import { useWikiStore } from "@/stores/wiki-store"
-import { useReviewStore } from "@/stores/review-store"
-import { useLintStore } from "@/stores/lint-store"
 import { useChatStore } from "@/stores/chat-store"
 import { BASE_FONT_SIZE_PX, useZoomStore } from "@/stores/zoom-store"
 import { openProject } from "@/commands/fs"
 import { getLastProject, getRecentProjects, saveLastProject, loadLlmConfig, loadLanguage, loadSearchApiConfig, loadEmbeddingConfig, loadMineruConfig, loadMultimodalConfig, loadOutputLanguage, loadProviderConfigs, loadCustomLlmPresets, loadActivePresetId, loadTaskModelRouting, loadProjectLlmOverride, loadProxyConfig, loadScheduledImportConfig, saveScheduledImportConfig, loadSourceWatchAllProjects, loadSourceWatchConfig, loadApiConfig, loadGeneralConfig, loadZoomLevel } from "@/lib/project-store"
-import { loadReviewItems, loadLintItems, loadChatHistory, loadChatPreferences } from "@/lib/persist"
+import { loadChatHistory, loadChatPreferences } from "@/lib/persist"
+import {
+  hydrateProjectSideStores,
+  snapshotLintHydration,
+  snapshotReviewHydration,
+  type SideStoreHydrationBaseline,
+} from "@/lib/hydrate-project-side-stores"
 import { setupAutoSave } from "@/lib/auto-save"
 import { startClipWatcher } from "@/lib/clip-watcher"
 import { DEFAULT_SOURCE_WATCH_CONFIG } from "@/lib/source-watch-config"
@@ -72,26 +76,6 @@ function App() {
       }
     } catch (err) {
       console.warn("[startup] failed to load chat history:", err)
-    }
-  }
-
-  async function hydrateProjectSideStores(proj: WikiProject): Promise<void> {
-    try {
-      const savedReview = await loadReviewItems(proj.path)
-      if (savedReview.length > 0 && isCurrentProject(proj)) {
-        useReviewStore.getState().setItems(savedReview)
-      }
-    } catch (err) {
-      console.warn("[startup] failed to load review items:", err)
-    }
-
-    try {
-      const savedLint = await loadLintItems(proj.path)
-      if (savedLint.length > 0 && isCurrentProject(proj)) {
-        useLintStore.getState().setItems(savedLint)
-      }
-    } catch (err) {
-      console.warn("[startup] failed to load lint items:", err)
     }
   }
 
@@ -436,6 +420,8 @@ function App() {
     // writers would persist empty arrays back over the old project's pending
     // review / deep-research items.
     const { runWithSuspendedAutoSave } = await import("@/lib/auto-save")
+    let reviewBaseline: SideStoreHydrationBaseline | undefined
+    let lintBaseline: SideStoreHydrationBaseline | undefined
     await runWithSuspendedAutoSave(async () => {
       // Clear all per-project state BEFORE loading new project data
       // to prevent cross-project contamination. MUST be awaited so the
@@ -443,6 +429,11 @@ function App() {
       // project's state is populated.
       const { resetProjectState } = await import("@/lib/reset-project-state")
       await resetProjectState()
+      // Snapshot empty-store generations before restoreQueue / ingest can
+      // mutate review or lint. Delayed disk hydration must merge against
+      // this baseline instead of blindly replacing later live items.
+      reviewBaseline = snapshotReviewHydration()
+      lintBaseline = snapshotLintHydration()
 
       setProject(proj)
       const projectLlmOverride = await loadProjectLlmOverride(proj.id)
@@ -495,7 +486,10 @@ function App() {
       // may enqueue ingest tasks and require an active project queue.
       try {
         const { restoreQueue } = await import("@/lib/ingest-queue")
-        await restoreQueue(proj.id, proj.path)
+        // This local installation is configured for unattended corpus
+        // processing. Resume persisted pending tasks automatically after
+        // an app restart instead of requiring a click in the Activity panel.
+        await restoreQueue(proj.id, proj.path, true)
       } catch (err) {
         console.error("Failed to restore ingest queue:", err)
       }
@@ -588,8 +582,12 @@ function App() {
     void hydrateScheduledImportAfterOpen(proj)
     // Heavy side-store hydration happens after the project shell is allowed
     // to render. Each write has a stale-project guard so a fast project switch
-    // cannot apply old review/lint/chat state to the new project.
-    void hydrateProjectSideStores(proj)
+    // cannot apply old review/lint/chat state to the new project. The post-reset
+    // generation snapshot keeps same-project ingest/user mutations from being
+    // overwritten by the delayed disk load.
+    if (reviewBaseline && lintBaseline) {
+      void hydrateProjectSideStores(proj, { review: reviewBaseline, lint: lintBaseline })
+    }
   }
 
   async function handleSelectRecent(proj: WikiProject) {
@@ -617,9 +615,21 @@ function App() {
   }
 
   async function handleSwitchProject() {
+    // Persist outgoing review/lint/chat before tearing anything down. A failed
+    // flush must abort the switch so resetProjectState() cannot discard the
+    // in-memory copy of data that never reached disk.
+    const { flushAndSuspendAutoSave } = await import("@/lib/auto-save")
+    try {
+      await flushAndSuspendAutoSave()
+    } catch (err) {
+      await appDialog.alert({ message: `Failed to save project before switching: ${err}` })
+      return
+    }
+    // Stop recent-project source watchers only after the flush succeeded.
     import("@/lib/project-file-sync").then(({ stopAllProjectFileSync }) => {
       stopAllProjectFileSync()
     }).catch(() => {})
+
     // Stop scheduled import before switching projects
     import("@/lib/scheduled-import").then(({ stopScheduledImport }) => {
       stopScheduledImport()
@@ -631,12 +641,6 @@ function App() {
       const currentConfig = useWikiStore.getState().scheduledImportConfig
       saveScheduledImportConfig(currentProject.path, currentConfig).catch(() => {})
     }
-
-    // Flush outgoing project's review/lint/chat to disk and suspend auto-save
-    // before reset empties the stores. resumeAutoSave() runs when the next
-    // project opens via handleProjectOpened.
-    const { flushAndSuspendAutoSave } = await import("@/lib/auto-save")
-    await flushAndSuspendAutoSave()
 
     // Clear all per-project state BEFORE flipping back to the welcome screen
     // so old data cannot leak in via any async render pass.

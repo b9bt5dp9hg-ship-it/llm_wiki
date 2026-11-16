@@ -2,7 +2,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 import { readFile } from "@/commands/fs"
 import {
   invalidateProjectFileSnapshotPaths,
+  ignoreFileChangeTask,
   rescanProjectFiles,
+  retryFileChangeTask,
   startProjectFileWatcher,
   stopProjectFileWatcher,
   type FileSyncPayload,
@@ -200,6 +202,26 @@ export async function rescanProjectFileSync(
   }
 }
 
+export async function retryProjectFileChangeTask(
+  project: WikiProject,
+  taskId: string,
+): Promise<void> {
+  if (useWikiStore.getState().project?.id !== project.id) return
+  const queue = await retryFileChangeTask(project.id, normalizePath(project.path), taskId)
+  if (useWikiStore.getState().project?.id !== project.id) return
+  useFileSyncStore.getState().setTasks(queue.tasks)
+}
+
+export async function ignoreProjectFileChangeTask(
+  project: WikiProject,
+  taskId: string,
+): Promise<void> {
+  if (useWikiStore.getState().project?.id !== project.id) return
+  const queue = await ignoreFileChangeTask(project.id, normalizePath(project.path), taskId)
+  if (useWikiStore.getState().project?.id !== project.id) return
+  useFileSyncStore.getState().setTasks(queue.tasks)
+}
+
 function scheduleRefreshAfterFileChanges(tasks: FileChangeTask[]): void {
   for (const task of tasks) {
     pendingRefreshPaths.add(task.path)
@@ -311,14 +333,15 @@ async function migrateUnchangedSourceMoves(
   return moved
 }
 
-async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
+export async function refreshAfterFileChanges(project: WikiProject, relativePaths: string[]): Promise<void> {
   const pp = normalizePath(project.path)
-  const store = useWikiStore.getState()
   await refreshProjectFileTree(pp, {
     projectId: project.id,
     bumpDataVersion: true,
   })
 
+  const store = useWikiStore.getState()
+  if (store.project?.id !== project.id || normalizePath(store.project.path) !== pp) return
   const selected = store.selectedFile ? normalizePath(store.selectedFile) : null
   if (!selected) return
 
@@ -327,10 +350,16 @@ async function refreshAfterFileChanges(project: WikiProject, relativePaths: stri
 
   try {
     const content = await readFile(selected)
-    useWikiStore.getState().setFileContent(content)
+    const current = useWikiStore.getState()
+    if (current.project?.id !== project.id) return
+    if (normalizePath(current.selectedFile ?? "") !== selected) return
+    current.setFileContent(content)
   } catch {
-    useWikiStore.getState().setSelectedFile(null)
-    useWikiStore.getState().setFileContent("")
+    const current = useWikiStore.getState()
+    if (current.project?.id !== project.id) return
+    if (normalizePath(current.selectedFile ?? "") !== selected) return
+    current.setSelectedFile(null)
+    current.setFileContent("")
   }
 }
 

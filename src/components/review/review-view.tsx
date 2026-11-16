@@ -16,12 +16,13 @@ import { Button } from "@/components/ui/button"
 import { useReviewStore, type ReviewItem } from "@/stores/review-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { writeFile, readFile, deleteFile, fileExists } from "@/commands/fs"
-import { normalizePath } from "@/lib/path-utils"
+import { confineWikiFilePath, normalizePath, previewFilePathCandidates } from "@/lib/path-utils"
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
 import { makeQueryFileName } from "@/lib/wiki-filename"
 import { availableReviewPageFileName, createReviewPageDrafts } from "@/lib/review-create-page"
 import { cleanAssistantContentForWikiSave, titleFromCleanAssistantContent } from "@/lib/chat-save-to-wiki"
+import { appendWikiIndexAndLog } from "@/lib/wiki-index-log"
 import { useTranslation } from "react-i18next"
 import { useAppDialog } from "@/stores/app-dialog-store"
 import { useResearchStore } from "@/stores/research-store"
@@ -42,7 +43,6 @@ export function ReviewView() {
   const resolveItem = useReviewStore((s) => s.resolveItem)
   const dismissItem = useReviewStore((s) => s.dismissItem)
   const clearResolved = useReviewStore((s) => s.clearResolved)
-  const setItems = useReviewStore((s) => s.setItems)
   const project = useWikiStore((s) => s.project)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedReviewIds, setSelectedReviewIds] = useState<Set<string>>(() => new Set())
@@ -76,16 +76,15 @@ export function ReviewView() {
     if (!project || refreshing) return
     setRefreshing(true)
     try {
-      const { loadReviewItems } = await import("@/lib/persist")
-      const loaded = await loadReviewItems(project.path)
-      setItems(loaded)
+      const { hydrateReviewItems } = await import("@/lib/hydrate-project-side-stores")
+      await hydrateReviewItems(project)
       setSelectedReviewIds(new Set())
     } catch (err) {
       console.error("Failed to refresh review items:", err)
     } finally {
       setRefreshing(false)
     }
-  }, [project, refreshing, setItems])
+  }, [project, refreshing])
 
   const handleResolve = useCallback(async (id: string, action: string) => {
     const pp = project ? normalizePath(project.path) : ""
@@ -132,24 +131,12 @@ export function ReviewView() {
         const pageContent = frontmatter + cleanContent
         await writeFile(filePath, pageContent)
 
-        // Update index
-        const indexPath = `${pp}/wiki/index.md`
-        let indexContent = ""
-        try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
         const linkTarget = fileName.replace(/\.md$/, "")
-        const entry = `- [[queries/${linkTarget}|${title}]]`
-        if (indexContent.includes("## Queries")) {
-          indexContent = indexContent.replace(/(## Queries\n)/, (match) => `${match}${entry}\n`)
-        } else {
-          indexContent = indexContent.trimEnd() + "\n\n## Queries\n" + entry + "\n"
-        }
-        await writeFile(indexPath, indexContent)
-
-        // Append log
-        const logPath = `${pp}/wiki/log.md`
-        let logContent = ""
-        try { logContent = await readFile(logPath) } catch { logContent = "# Wiki Log\n" }
-        await writeFile(logPath, logContent.trimEnd() + `\n- ${date}: Saved query page \`${fileName}\`\n`)
+        await appendWikiIndexAndLog(
+          pp,
+          [{ sectionHeader: "## Queries", line: `- [[queries/${linkTarget}|${title}]]` }],
+          `- ${date}: Saved query page \`${fileName}\``,
+        )
 
         await refreshProjectFileTree(pp, {
           projectId: project.id,
@@ -168,15 +155,12 @@ export function ReviewView() {
       // Open a page in the right-side preview without resolving the
       // review item. Viewing is not the same as accepting / fixing it.
       const page = action.startsWith("open:")
-        ? action.slice(5)
+        ? action.slice("open:".length)
         : item?.affectedPages?.[0] ?? item?.sourcePath ?? ""
       if (!page) return
-      const normalizedPage = normalizePath(page)
-      const candidates = normalizedPage.startsWith(pp)
-        ? [normalizedPage]
-        : normalizedPage.startsWith("wiki/") || normalizedPage.startsWith("raw/")
-          ? [`${pp}/${normalizedPage}`, `${pp}/${normalizedPage}.md`]
-          : [`${pp}/wiki/${normalizedPage}`, `${pp}/wiki/${normalizedPage}.md`]
+      // Persisted review.json can name an arbitrary open: path. Collapse
+      // `..` and refuse anything outside wiki/ or raw/.
+      const candidates = previewFilePathCandidates(pp, page)
       for (const path of candidates) {
         try {
           const content = await readFile(path)
@@ -187,8 +171,13 @@ export function ReviewView() {
         }
       }
     } else if (action.startsWith("delete:") && project) {
-      // Delete a file
-      const filePath = action.slice(7)
+      // Persisted review.json can name an arbitrary delete: path. Collapse
+      // `..` and refuse anything that is not a markdown file under wiki/.
+      const filePath = confineWikiFilePath(pp, action.slice("delete:".length))
+      if (!filePath) {
+        resolveItem(id, "Delete failed")
+        return
+      }
       try {
         setReviewWorking(id, true)
         setReviewError(id, null)
@@ -267,29 +256,20 @@ export function ReviewView() {
             created.push({ title: draft.title, dir: draft.dir, fileName, filePath, pageContent, pageType: draft.pageType, date })
           }
 
-          // Update index
-          const indexPath = `${pp}/wiki/index.md`
-          let indexContent = ""
-          try { indexContent = await readFile(indexPath) } catch { indexContent = "# Wiki Index\n" }
-          for (const createdPage of created) {
-            const sectionHeader = `## ${createdPage.dir.charAt(0).toUpperCase() + createdPage.dir.slice(1)}`
-            const linkTarget = createdPage.fileName.replace(/\.md$/, "")
-            const entry = `- [[${createdPage.dir}/${linkTarget}|${createdPage.title}]]`
-            if (indexContent.includes(sectionHeader)) {
-              indexContent = indexContent.replace(new RegExp(`(${sectionHeader}\n)`), (match) => `${match}${entry}\n`)
-            } else {
-              indexContent = indexContent.trimEnd() + `\n\n${sectionHeader}\n${entry}\n`
-            }
-          }
-          await writeFile(indexPath, indexContent)
-
-          // Log
-          const logPath = `${pp}/wiki/log.md`
-          let logContent = ""
-          try { logContent = await readFile(logPath) } catch { logContent = "# Wiki Log\n" }
           const createdNames = created.map((p) => `\`${p.fileName}\``).join(", ")
           const logDate = created[0]?.date ?? makeQueryFileName("review").date
-          await writeFile(logPath, logContent.trimEnd() + `\n- ${logDate}: Created ${created.length} page${created.length === 1 ? "" : "s"} from review: ${createdNames}\n`)
+          await appendWikiIndexAndLog(
+            pp,
+            created.map((createdPage) => {
+              const sectionHeader = `## ${createdPage.dir.charAt(0).toUpperCase() + createdPage.dir.slice(1)}`
+              const linkTarget = createdPage.fileName.replace(/\.md$/, "")
+              return {
+                sectionHeader,
+                line: `- [[${createdPage.dir}/${linkTarget}|${createdPage.title}]]`,
+              }
+            }),
+            `- ${logDate}: Created ${created.length} page${created.length === 1 ? "" : "s"} from review: ${createdNames}`,
+          )
 
           await refreshProjectFileTree(pp, {
             projectId: project.id,

@@ -41,6 +41,7 @@ import { FrontmatterPanel } from "@/components/editor/frontmatter-panel"
 import { useWikiStore } from "@/stores/wiki-store"
 import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
 import { FileHistoryButton } from "@/components/editor/file-history-panel"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 interface FilePreviewProps {
   filePath: string
@@ -200,15 +201,15 @@ function PdfPreview({ filePath, content }: { filePath: string; content: string }
   return <div className="flex h-full min-h-0 flex-col p-4">
     <div className="mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
       <span className="min-w-0 flex-1 truncate" title={filePath}>{filePath}</span>
-      <button type="button" className="rounded border px-2 py-1 hover:bg-muted" onClick={() => setShowText((value) => !value)}>{showText ? t("preview.pdfDocument") : t("preview.pdfText")}</button>
-      {!showText && <><button type="button" className="rounded p-1 hover:bg-muted" onClick={() => setZoom((value) => Math.max(50, value - 25))}><Minus className="h-3.5 w-3.5" /></button><span className="w-10 text-center">{zoom}%</span><button type="button" className="rounded p-1 hover:bg-muted" onClick={() => setZoom((value) => Math.min(300, value + 25))}><Plus className="h-3.5 w-3.5" /></button><label className="ml-1 flex items-center gap-1">{t("preview.pdfPage")}<input value={page} min={1} max={pageCount || undefined} type="number" onChange={(event) => setPage(clampPdfPage(Number(event.target.value) || 1, pageCount))} className="w-14 rounded border bg-background px-1 py-0.5" /></label><span>/ {pageCount || "–"}</span></>}
+      <button type="button" aria-pressed={showText} className="rounded border px-2 py-1 hover:bg-muted" onClick={() => setShowText((value) => !value)}>{showText ? t("preview.pdfDocument") : t("preview.pdfText")}</button>
+      {!showText && <><button type="button" aria-label={t("settings.sections.interface.zoomOut")} className="rounded p-1 hover:bg-muted" onClick={() => setZoom((value) => Math.max(50, value - 25))}><Minus className="h-3.5 w-3.5" /></button><span className="w-10 text-center">{zoom}%</span><button type="button" aria-label={t("settings.sections.interface.zoomIn")} className="rounded p-1 hover:bg-muted" onClick={() => setZoom((value) => Math.min(300, value + 25))}><Plus className="h-3.5 w-3.5" /></button><label className="ml-1 flex items-center gap-1">{t("preview.pdfPage")}<input value={page} min={1} max={pageCount || undefined} type="number" onChange={(event) => setPage(clampPdfPage(Number(event.target.value) || 1, pageCount))} className="w-14 rounded border bg-background px-1 py-0.5" /></label><span>/ {pageCount || "–"}</span></>}
       <button type="button" onClick={() => void openPath(filePath)} className="rounded p-1 hover:bg-muted" title={t("preview.openWithSystem")} aria-label={t("preview.openWithSystem")}><ExternalLink className="h-3.5 w-3.5" /></button>
     </div>
     <div className="min-h-0 flex-1 overflow-hidden rounded-md border bg-white">
       {showText ? <TextPreview filePath={filePath} content={content} label="PDF text" /> : loading ? (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("preview.pdfLoading")}</div>
       ) : loadError ? (
-        <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-muted-foreground">
           <FileQuestion className="h-8 w-8" />
           <p>{t("preview.pdfLoadError")}</p>
           <p className="max-w-xl break-words text-xs opacity-70">{loadError}</p>
@@ -256,7 +257,7 @@ export function parseDelimitedContent(content: string, delimiter: string, maxRow
 
 function DelimitedTablePreview({ filePath, content, delimiter }: { filePath: string; content: string; delimiter: string }) {
   const rows = useMemo(() => parseDelimitedContent(content, delimiter), [content, delimiter])
-  return <div className="h-full overflow-auto p-4"><div className="mb-2 text-xs text-muted-foreground">{filePath}</div><table className="min-w-full border-collapse text-xs"><thead className="sticky top-0 bg-muted">{rows[0] && <tr>{rows[0].map((cell, index) => <th key={index} className="border px-2 py-1 text-left">{cell}</th>)}</tr>}</thead><tbody>{rows.slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="max-w-80 border px-2 py-1 align-top">{cell}</td>)}</tr>)}</tbody></table></div>
+  return <div className="h-full overflow-auto p-4"><div className="mb-2 text-xs text-muted-foreground">{filePath}</div><table className="min-w-full border-collapse text-xs"><caption className="sr-only">{filePath}</caption><thead className="sticky top-0 bg-muted">{rows[0] && <tr>{rows[0].map((cell, index) => <th key={index} className="border px-2 py-1 text-left">{cell}</th>)}</tr>}</thead><tbody>{rows.slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="max-w-80 border px-2 py-1 align-top">{cell}</td>)}</tr>)}</tbody></table></div>
 }
 
 function HtmlPreview({
@@ -279,6 +280,7 @@ function HtmlPreview({
         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase">HTML</span>
         <button
           type="button"
+          aria-pressed={showSource}
           onClick={() => setShowSource((current) => !current)}
           className="rounded p-1 hover:bg-accent hover:text-foreground"
           title={showSource ? t("preview.showRendered") : t("preview.showSource")}
@@ -378,12 +380,27 @@ function extractedTextLabel(filePath: string): string {
 }
 
 function ImagePreview({ filePath, fileName }: { filePath: string; fileName: string }) {
+  const { t } = useTranslation()
   const src = convertFileSrc(filePath)
   const [expanded, setExpanded] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const imageDialogRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!expanded) return
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      imageDialogRef.current?.querySelector<HTMLElement>("button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
+    }
+  }, [expanded])
   return (
     <div className="flex h-full flex-col p-6">
-      <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground"><span className="min-w-0 flex-1 truncate">{filePath}</span><button type="button" onClick={() => setExpanded(true)} className="rounded p-1 hover:bg-muted"><Maximize2 className="h-4 w-4" /></button></div>
+      <div className="mb-4 flex items-center gap-2 text-xs text-muted-foreground"><span className="min-w-0 flex-1 truncate">{filePath}</span><button type="button" aria-label={fileName} onClick={() => setExpanded(true)} className="rounded p-1 hover:bg-muted"><Maximize2 className="h-4 w-4" /></button></div>
       <div className="flex flex-1 items-center justify-center overflow-auto rounded-lg bg-muted/30">
         <img
           src={src}
@@ -391,7 +408,7 @@ function ImagePreview({ filePath, fileName }: { filePath: string; fileName: stri
           className="max-h-full max-w-full object-contain"
         />
       </div>
-      {expanded && <div className="fixed inset-0 z-[100] flex flex-col bg-background/95 p-4 backdrop-blur-sm"><div className="flex justify-end gap-1"><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.max(.25, value - .25))}><Minus className="h-4 w-4" /></button><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.min(5, value + .25))}><Plus className="h-4 w-4" /></button><button type="button" className="rounded p-2 hover:bg-muted" onClick={() => setExpanded(false)}><X className="h-4 w-4" /></button></div><div className="min-h-0 flex-1 overflow-auto text-center"><img src={src} alt={fileName} className="mx-auto max-w-none object-contain" style={{ width: `${zoom * 100}%` }} /></div></div>}
+      {expanded && <div ref={imageDialogRef} role="dialog" aria-modal="true" aria-labelledby="fullscreen-image-title" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setExpanded(false); return } trapTabInContainer(event.nativeEvent, event.currentTarget) }} className="fixed inset-0 z-[100] flex flex-col bg-background/95 p-4 backdrop-blur-sm"><span id="fullscreen-image-title" className="sr-only">{fileName}</span><div className="flex justify-end gap-1"><button type="button" aria-label={t("settings.sections.interface.zoomOut")} className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.max(.25, value - .25))}><Minus className="h-4 w-4" /></button><button type="button" aria-label={t("settings.sections.interface.zoomIn")} className="rounded p-2 hover:bg-muted" onClick={() => setZoom((value) => Math.min(5, value + .25))}><Plus className="h-4 w-4" /></button><button type="button" aria-label={t("common.close")} className="rounded p-2 hover:bg-muted" onClick={() => setExpanded(false)}><X className="h-4 w-4" /></button></div><div className="min-h-0 flex-1 overflow-auto text-center"><img src={src} alt={fileName} className="mx-auto max-w-none object-contain" style={{ width: `${zoom * 100}%` }} /></div></div>}
     </div>
   )
 }
@@ -660,7 +677,7 @@ function BinaryPlaceholder({
           {t("preview.openWithSystem")}
         </button>
       </div>
-      {loadError && <p className="max-w-lg text-xs text-destructive">{loadError}</p>}
+      {loadError && <p role="alert" className="max-w-lg text-xs text-destructive">{loadError}</p>}
     </div>
   )
 }

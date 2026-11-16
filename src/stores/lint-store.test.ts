@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import type { LintResult } from "@/lib/lint"
-import { useLintStore, type LintItem } from "./lint-store"
+import { normalizeLintItems, useLintStore, type LintItem } from "./lint-store"
 
 function makeLintResult(overrides: Partial<Omit<LintResult, "type" | "severity" | "page" | "detail">> & { type?: LintResult["type"]; severity?: LintResult["severity"]; page?: string } = {}): LintResult {
   return {
@@ -14,6 +14,22 @@ function makeLintResult(overrides: Partial<Omit<LintResult, "type" | "severity" 
 
 beforeEach(() => {
   useLintStore.setState({ items: [] })
+})
+
+describe("normalizeLintItems", () => {
+  it("returns empty for non-arrays and drops null/invalid entries", () => {
+    expect(normalizeLintItems({ items: [] })).toEqual([])
+    expect(normalizeLintItems(null)).toEqual([])
+    const valid: LintItem = {
+      id: "lint-1",
+      type: "orphan",
+      severity: "info",
+      page: "ok.md",
+      detail: "d",
+      createdAt: 1,
+    }
+    expect(normalizeLintItems([valid, null, { id: 3 }, "x"]).map((item) => item.id)).toEqual(["lint-1"])
+  })
 })
 
 describe("lint-store addItems", () => {

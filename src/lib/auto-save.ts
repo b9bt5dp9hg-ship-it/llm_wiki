@@ -8,6 +8,38 @@ let reviewTimer: ReturnType<typeof setTimeout> | null = null
 let lintTimer: ReturnType<typeof setTimeout> | null = null
 let chatTimer: ReturnType<typeof setTimeout> | null = null
 
+// Debounced saves and flush must not overlap. An older write that started
+// before flushAndSuspendAutoSave() can otherwise finish last and replace the
+// outgoing snapshot with stale data. One chain per area keeps that order.
+const reviewWrites = createSerialQueue()
+const lintWrites = createSerialQueue()
+const chatWrites = createSerialQueue()
+
+function createSerialQueue(): { enqueue: (job: () => Promise<unknown>) => Promise<unknown> } {
+  let tail: Promise<unknown> = Promise.resolve()
+  let pending = 0
+  return {
+    enqueue(job: () => Promise<unknown>): Promise<unknown> {
+      pending++
+      let run: Promise<unknown>
+      if (pending === 1) {
+        try {
+          run = Promise.resolve(job())
+        } catch (err) {
+          run = Promise.reject(err)
+        }
+      } else {
+        run = tail.then(job)
+      }
+      tail = run.then(
+        () => { pending-- },
+        () => { pending-- },
+      )
+      return run
+    },
+  }
+}
+
 // While suspended, the store subscriptions skip writing. This is essential
 // during a project switch: resetProjectState() clears every store to empty,
 // and without this guard the debounced callbacks would persist those empty
@@ -22,10 +54,16 @@ function clearTimers(): void {
   if (chatTimer) { clearTimeout(chatTimer); chatTimer = null }
 }
 
+function persistErrorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason)
+}
+
 /**
  * Immediately persist the current stores to the current project, then stop
  * auto-save from firing until resumeAutoSave() is called. Must be invoked
  * before resetProjectState() clears the stores on a project switch.
+ * Throws if any persist step fails and re-arms auto-save so the still-open
+ * project is not left unsaved and then emptied.
  */
 export async function flushAndSuspendAutoSave(): Promise<void> {
   suspended = true
@@ -35,21 +73,33 @@ export async function flushAndSuspendAutoSave(): Promise<void> {
   const review = useReviewStore.getState().items
   const lint = useLintStore.getState().items
   const chat = useChatStore.getState()
-  await Promise.allSettled([
-    saveReviewItems(projectPath, review),
-    saveLintItems(projectPath, lint),
-    saveChatPreferences(projectPath, {
+  const jobs: Array<[string, Promise<unknown>]> = [
+    ["review", reviewWrites.enqueue(() => saveReviewItems(projectPath, review))],
+    ["lint", lintWrites.enqueue(() => saveLintItems(projectPath, lint))],
+    ["chat preferences", chatWrites.enqueue(() => saveChatPreferences(projectPath, {
       useWebSearch: chat.useWebSearch,
       useAnyTxtSearch: chat.useAnyTxtSearch,
       agentMode: chat.agentMode,
       retrievalMode: chat.retrievalMode,
       selectedSkills: chat.selectedSkills,
       disabledSkills: chat.disabledSkills,
-    }),
-    chat.isStreaming
-      ? Promise.resolve()
-      : saveChatHistory(projectPath, chat.conversations, chat.messages),
-  ])
+    }))],
+  ]
+  if (!chat.isStreaming) {
+    jobs.push(["chat history", chatWrites.enqueue(() => saveChatHistory(projectPath, chat.conversations, chat.messages))])
+  }
+  const results = await Promise.allSettled(jobs.map(([, job]) => job))
+  const failures = results.flatMap((result, i) => {
+    if (result.status === "fulfilled") return []
+    return [`${jobs[i][0]}: ${persistErrorMessage(result.reason)}`]
+  })
+  if (failures.length > 0) {
+    // Stay on the current project: resume so later edits still persist, and
+    // surface the failure so callers do not empty in-memory state as if the
+    // flush had succeeded.
+    suspended = false
+    throw new Error(`Failed to flush auto-save before project switch: ${failures.join("; ")}`)
+  }
 }
 
 export function resumeAutoSave(): void {
@@ -87,8 +137,9 @@ export function setupAutoSave(): void {
     const projectPath = useWikiStore.getState().project?.path
     if (reviewTimer) clearTimeout(reviewTimer)
     reviewTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        saveReviewItems(projectPath, state.items).catch(() => {})
+        reviewWrites.enqueue(() => saveReviewItems(projectPath, state.items)).catch(() => {})
       }
     }, 1000)
   })
@@ -99,8 +150,9 @@ export function setupAutoSave(): void {
     const projectPath = useWikiStore.getState().project?.path
     if (lintTimer) clearTimeout(lintTimer)
     lintTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        saveLintItems(projectPath, state.items).catch(() => {})
+        lintWrites.enqueue(() => saveLintItems(projectPath, state.items)).catch(() => {})
       }
     }, 1000)
   })
@@ -108,12 +160,21 @@ export function setupAutoSave(): void {
   // Auto-save chat conversations and messages (debounced 2s, skip during streaming)
   useChatStore.subscribe((state) => {
     if (suspended) return
-    if (state.isStreaming) return
+    if (state.isStreaming) {
+      // Drop a timer queued before streaming started. Otherwise a chat
+      // deleted during the stream is rewritten from that stale snapshot.
+      if (chatTimer) {
+        clearTimeout(chatTimer)
+        chatTimer = null
+      }
+      return
+    }
     const projectPath = useWikiStore.getState().project?.path
     if (chatTimer) clearTimeout(chatTimer)
     chatTimer = setTimeout(() => {
+      if (suspended) return
       if (projectPath) {
-        Promise.allSettled([
+        chatWrites.enqueue(() => Promise.allSettled([
           saveChatPreferences(projectPath, {
             useWebSearch: state.useWebSearch,
             useAnyTxtSearch: state.useAnyTxtSearch,
@@ -123,7 +184,7 @@ export function setupAutoSave(): void {
             disabledSkills: state.disabledSkills,
           }),
           saveChatHistory(projectPath, state.conversations, state.messages),
-        ]).catch(() => {})
+        ])).catch(() => {})
       }
     }, 2000)
   })

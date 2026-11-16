@@ -82,7 +82,7 @@ export function UpdateBanner() {
         <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/15">
           <Sparkles className="h-3.5 w-3.5 text-primary" />
         </div>
-        <span className="truncate font-medium text-foreground">
+        <span role="status" className="truncate font-medium text-foreground">
           {t("updateBanner.message", {
             version: result.remote.replace(/^v/, ""),
             defaultValue: `Version ${result.remote.replace(/^v/, "")} is available`,

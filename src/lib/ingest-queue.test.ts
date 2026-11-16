@@ -47,6 +47,14 @@ vi.mock("@/lib/project-identity", () => ({
   loadRegistry: vi.fn(),
 }))
 
+vi.mock("@/lib/source-lifecycle", () => ({
+  deleteSourceFiles: vi.fn().mockResolvedValue({
+    deletedWikiPaths: [],
+    rewrittenSourcePages: 0,
+    skippedPages: 0,
+  }),
+}))
+
 import {
   enqueueIngest,
   enqueueBatch,
@@ -301,6 +309,59 @@ describe("ingest-queue — enqueue & basic processing", () => {
     expect(queuePath).toContain(".llm-wiki/ingest-queue.json")
   })
 
+  it("rejects live enqueue whose sourcePath leaves the project", async () => {
+    mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
+
+    await expect(enqueueIngest(TEST_ID, "/etc/passwd")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+    await expect(
+      enqueueIngest(TEST_ID, "raw/sources/../../.llm-wiki/project.json"),
+    ).rejects.toThrow(/must stay inside the project/)
+    await expect(enqueueIngest(TEST_ID, "wiki/index.md")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+    await expect(enqueueIngest(TEST_ID, ".llm-wiki/project.json")).rejects.toThrow(
+      /must stay inside the project/,
+    )
+
+    expect(getQueue()).toHaveLength(0)
+    expect(mockAutoIngest).not.toHaveBeenCalled()
+  })
+
+  it("does not persist inactive-project tasks whose sourcePath escapes the project", async () => {
+    const ids = await enqueueInactiveProjectBatch(TEST_ID_B, TEST_PATH_B, [
+      { sourcePath: "/etc/passwd", folderContext: "" },
+      { sourcePath: `${TEST_PATH_B}/wiki/index.md`, folderContext: "" },
+      { sourcePath: `${TEST_PATH_B}/raw/sources/ok.md`, folderContext: "" },
+    ])
+
+    expect(ids).toHaveLength(1)
+    const inactiveWrite = mockWriteFile.mock.calls.find(
+      ([path]) => path === `${TEST_PATH_B}/.llm-wiki/ingest-queue.json`,
+    )
+    expect(inactiveWrite).toBeDefined()
+    const persisted = JSON.parse(String(inactiveWrite?.[1])) as Array<{ sourcePath: string }>
+    expect(persisted.map((task) => task.sourcePath)).toEqual(["raw/sources/ok.md"])
+  })
+
+  it("runs live ingest from a project-relative path, never an absolute escape", async () => {
+    mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
+    await enqueueIngest(TEST_ID, `${TEST_PATH}/raw/sources/paper.pdf`)
+    await flushMicrotasks(10)
+
+    expect(mockAutoIngest).toHaveBeenCalledWith(
+      TEST_PATH,
+      `${TEST_PATH}/raw/sources/paper.pdf`,
+      expect.any(Object),
+      expect.any(AbortSignal),
+      "",
+      expect.any(Function),
+      expect.objectContaining({ runCommit: expect.any(Function) }),
+    )
+    expect(getQueue()).toHaveLength(0)
+  })
+
   it("enqueueBatch queues multiple tasks and processes them serially", async () => {
     mockAutoIngest.mockResolvedValue(["wiki/sources/foo.md"])
 
@@ -534,7 +595,7 @@ describe("ingest-queue — retry & failure", () => {
     const saved = [
       {
         id: "ingest-failed-a",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "failed",
         addedAt: 0,
@@ -543,7 +604,7 @@ describe("ingest-queue — retry & failure", () => {
       },
       {
         id: "ingest-failed-b",
-        sourcePath: "b.md",
+        sourcePath: "raw/sources/b.md",
         folderContext: "",
         status: "failed",
         addedAt: 1,
@@ -594,6 +655,28 @@ describe("ingest-queue — cancel", () => {
     expect(getQueue().some((task) => task.sourcePath.endsWith("active.md"))).toBe(true)
   })
 
+  it("deletes source-summary writes when a discarded in-flight ingest later completes", async () => {
+    let finishOldRun: ((files: string[]) => void) | undefined
+    mockAutoIngest.mockImplementationOnce(
+      () => new Promise<string[]>((resolve) => {
+        finishOldRun = resolve
+      }),
+    )
+
+    await enqueueIngest(TEST_ID, "raw/sources/removed.md")
+    await flushMicrotasks(2)
+    expect(getQueue()[0]?.status).toBe("processing")
+    mockDeleteFile.mockClear()
+
+    await discardTasksForSources(["raw/sources/removed.md"])
+    finishOldRun?.(["wiki/sources/removed.md", "wiki/concepts/shared.md"])
+
+    await vi.waitFor(() => {
+      expect(mockDeleteFile).toHaveBeenCalledWith(`${TEST_PATH}/wiki/sources/removed.md`)
+    })
+    expect(mockDeleteFile).not.toHaveBeenCalledWith(`${TEST_PATH}/wiki/concepts/shared.md`)
+  })
+
   it("cancelTask retains a pending task for restart without calling autoIngest", async () => {
     mockAutoIngest.mockImplementation(() => new Promise(() => {})) // block first task
 
@@ -634,8 +717,8 @@ describe("ingest-queue — cancel", () => {
 
   it("removeTask drops a failed task and persists the removal", async () => {
     mockReadFile.mockResolvedValue(JSON.stringify([
-      { id: "ingest-failed-a", sourcePath: "a.md", folderContext: "", status: "failed", addedAt: 1, error: "boom", retryCount: 3 },
-      { id: "ingest-failed-b", sourcePath: "b.md", folderContext: "", status: "failed", addedAt: 2, error: "boom", retryCount: 3 },
+      { id: "ingest-failed-a", sourcePath: "raw/sources/a.md", folderContext: "", status: "failed", addedAt: 1, error: "boom", retryCount: 3 },
+      { id: "ingest-failed-b", sourcePath: "raw/sources/b.md", folderContext: "", status: "failed", addedAt: 2, error: "boom", retryCount: 3 },
     ]))
     await restoreQueue(TEST_ID, TEST_PATH)
     mockWriteFile.mockClear()
@@ -951,6 +1034,117 @@ describe("ingest-queue — clearQueueState", () => {
 })
 
 describe("ingest-queue — restoreQueue", () => {
+  it("drops restored tasks whose sourcePath leaves raw/sources", async () => {
+    // Restored pending work auto-resumes; keep the run open so the restored
+    // queue stays observable and only the confined source is ever ingested.
+    mockAutoIngest.mockImplementation(() => new Promise(() => {}))
+    mockReadFile.mockResolvedValue(JSON.stringify([
+      {
+        id: "ingest-ok",
+        sourcePath: "raw/sources/paper.pdf",
+        folderContext: "papers",
+        status: "pending",
+        addedAt: 1,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-abs-inside",
+        sourcePath: `${TEST_PATH}/raw/sources/inside.md`,
+        folderContext: "",
+        status: "failed",
+        addedAt: 2,
+        error: "prior",
+        retryCount: 1,
+      },
+      {
+        id: "ingest-escape",
+        sourcePath: "raw/sources/../../.llm-wiki/project.json",
+        folderContext: "",
+        status: "pending",
+        addedAt: 3,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-wiki",
+        sourcePath: "wiki/index.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 4,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-outside",
+        sourcePath: "/etc/passwd",
+        folderContext: "",
+        status: "pending",
+        addedAt: 5,
+        error: null,
+        retryCount: 0,
+      },
+      {
+        id: "ingest-bare",
+        sourcePath: "a.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 6,
+        error: null,
+        retryCount: 0,
+      },
+    ]))
+
+    await restoreQueue(TEST_ID, TEST_PATH)
+    await flushMicrotasks(2)
+
+    expect(getQueue().map((task) => task.sourcePath)).toEqual([
+      "raw/sources/paper.pdf",
+      "raw/sources/inside.md",
+    ])
+    expect(mockAutoIngest.mock.calls.map((call) => call[1])).toEqual([
+      `${TEST_PATH}/raw/sources/paper.pdf`,
+    ])
+
+    const persisted = mockWriteFile.mock.calls
+      .map((call) => call[1])
+      .filter((payload): payload is string => typeof payload === "string")
+      .map((payload) => {
+        try {
+          return JSON.parse(payload) as Array<{ id: string; sourcePath: string }>
+        } catch {
+          return null
+        }
+      })
+      .find((tasks) => Array.isArray(tasks) && tasks.some((task) => task.id === "ingest-ok"))
+    expect(persisted?.map((task) => task.sourcePath)).toEqual([
+      "raw/sources/paper.pdf",
+      "raw/sources/inside.md",
+    ])
+    expect(persisted?.some((task) => task.sourcePath.includes(".."))).toBe(false)
+  })
+
+  it("auto-resumes restored pending work when explicitly requested", async () => {
+    mockAutoIngest.mockResolvedValue([])
+    mockReadFile.mockResolvedValue(JSON.stringify([
+      {
+        id: "ingest-auto-resume",
+        sourcePath: "raw/sources/a.md",
+        folderContext: "",
+        status: "pending",
+        addedAt: 0,
+        error: null,
+        retryCount: 0,
+      },
+    ]))
+
+    await restoreQueue(TEST_ID, TEST_PATH, true)
+    await flushMicrotasks(4)
+
+    expect(mockAutoIngest).toHaveBeenCalled()
+    expect(getQueueSummary().paused).toBe(false)
+  })
+
   it("resets in-memory state before loading, preventing cross-project bleed", async () => {
     // Seed in-memory state from project A
     mockAutoIngest.mockImplementation(() => new Promise(() => {}))
@@ -968,7 +1162,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-abc",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "processing",
         addedAt: 0,
@@ -992,7 +1186,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-x",
-        sourcePath: "x.md",
+        sourcePath: "raw/sources/x.md",
         folderContext: "",
         status: "failed",
         addedAt: 0,
@@ -1014,7 +1208,7 @@ describe("ingest-queue — restoreQueue", () => {
     const savedLegacy = [
       {
         id: "ingest-legacy",
-        sourcePath: "legacy.md",
+        sourcePath: "raw/sources/legacy.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1038,7 +1232,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1070,7 +1264,7 @@ describe("ingest-queue — restoreQueue", () => {
     mockReadFile.mockResolvedValue(JSON.stringify([
       {
         id: "pending-a",
-        sourcePath: "a.md",
+        sourcePath: "raw/sources/a.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1079,7 +1273,7 @@ describe("ingest-queue — restoreQueue", () => {
       },
       {
         id: "pending-b",
-        sourcePath: "b.md",
+        sourcePath: "raw/sources/b.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1116,7 +1310,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1135,7 +1329,7 @@ describe("ingest-queue — restoreQueue", () => {
     await flushMicrotasks(10)
 
     expect(mockAutoIngest).toHaveBeenCalledTimes(2)
-    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/restored.md`)
+    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/raw/sources/restored.md`)
     expect(mockAutoIngest.mock.calls[1][1]).toBe(`${TEST_PATH}/live.md`)
     expect(getQueue()).toHaveLength(0)
     expect(getQueueSummary().paused).toBe(false)
@@ -1145,7 +1339,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "restored.md",
+        sourcePath: "raw/sources/restored.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1169,7 +1363,7 @@ describe("ingest-queue — restoreQueue", () => {
     const saved = [
       {
         id: "ingest-restored",
-        sourcePath: "same.md",
+        sourcePath: "raw/sources/same.md",
         folderContext: "",
         status: "pending",
         addedAt: 0,
@@ -1185,7 +1379,7 @@ describe("ingest-queue — restoreQueue", () => {
 
     await restoreQueue(TEST_ID, TEST_PATH)
     await flushMicrotasks(2)
-    await enqueueIngest(TEST_ID, "same.md")
+    await enqueueIngest(TEST_ID, "raw/sources/same.md")
     await flushMicrotasks(2)
 
     expect(mockAutoIngest).toHaveBeenCalledTimes(1)
@@ -1195,7 +1389,7 @@ describe("ingest-queue — restoreQueue", () => {
     await flushMicrotasks(10)
 
     expect(mockAutoIngest).toHaveBeenCalledTimes(2)
-    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/same.md`)
+    expect(mockAutoIngest.mock.calls[0][1]).toBe(`${TEST_PATH}/raw/sources/same.md`)
     expect(getQueue()).toHaveLength(0)
     expect(getQueueSummary().paused).toBe(false)
   })
@@ -1253,7 +1447,7 @@ describe("ingest-queue — pauseQueue & switch-project survival", () => {
 
   it("pauseQueue then restoreQueue of SAME project brings tasks back", async () => {
     mockAutoIngest.mockImplementation(() => new Promise(() => {}))
-    await enqueueIngest(TEST_ID, "first.md")
+    await enqueueIngest(TEST_ID, "raw/sources/first.md")
     await flushMicrotasks(2)
 
     // Capture what pauseQueue writes so restore can read it back.
@@ -1269,7 +1463,7 @@ describe("ingest-queue — pauseQueue & switch-project survival", () => {
 
     const queue = getQueue()
     expect(queue).toHaveLength(1)
-    expect(queue[0].sourcePath).toBe("first.md")
+    expect(queue[0].sourcePath).toBe("raw/sources/first.md")
   })
 
   it("processNext bails if currentProjectId changes mid-ingest (no cross-project writes)", async () => {
@@ -1514,7 +1708,7 @@ describe("cleanupWrittenFiles — page cascade", () => {
     expect(cascadeDeleteWikiPageMock).toHaveBeenNthCalledWith(2, "/proj", "/proj/wiki/entities/transformer.md")
   })
 
-  it("uses absolute paths verbatim (doesn't double-prefix the project path)", async () => {
+  it("does not delete absolute wiki pages outside the current project", async () => {
     const { deleteFile } = await import("@/commands/fs")
     const mockDeleteFile = vi.mocked(deleteFile)
     mockDeleteFile.mockReset()
@@ -1522,11 +1716,20 @@ describe("cleanupWrittenFiles — page cascade", () => {
 
     await cleanupWrittenFiles("/proj", ["/abs/elsewhere/wiki/concepts/foo.md"])
 
-    expect(mockDeleteFile).toHaveBeenCalledWith("/abs/elsewhere/wiki/concepts/foo.md")
-    expect(cascadeDeleteWikiPageMock).toHaveBeenCalledWith(
-      "/proj",
-      "/abs/elsewhere/wiki/concepts/foo.md",
-    )
+    expect(mockDeleteFile).not.toHaveBeenCalled()
+    expect(cascadeDeleteWikiPageMock).not.toHaveBeenCalled()
+  })
+
+  it("deletes in-project absolute wiki pages without double-prefixing", async () => {
+    const { deleteFile } = await import("@/commands/fs")
+    const mockDeleteFile = vi.mocked(deleteFile)
+    mockDeleteFile.mockReset()
+    mockDeleteFile.mockResolvedValue(undefined)
+
+    await cleanupWrittenFiles("/proj", ["/proj/wiki/concepts/foo.md"])
+
+    expect(mockDeleteFile).toHaveBeenCalledWith("/proj/wiki/concepts/foo.md")
+    expect(cascadeDeleteWikiPageMock).toHaveBeenCalledWith("/proj", "/proj/wiki/concepts/foo.md")
   })
 
   it("continues to subsequent files when one delete throws", async () => {

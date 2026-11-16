@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
@@ -19,7 +20,6 @@ fn safe_relative(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("llm-wiki-{name}-{}", Uuid::new_v4()))
@@ -47,6 +47,58 @@ mod tests {
         assert!(index.contains("[[entities/a|Alpha]]"));
         assert!(index.contains("[[concepts/a|Also Alpha]]"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_reissues_stable_project_identity() {
+        let source = temp("import-id-source");
+        let target = temp("import-id-target");
+        let archive = temp("import-id-archive").with_extension("zip");
+        fs::create_dir_all(source.join("wiki")).unwrap();
+        fs::create_dir_all(source.join(".llm-wiki")).unwrap();
+        fs::write(source.join("wiki/index.md"), "# Index").unwrap();
+        let original_id = "11111111-1111-4111-8111-111111111111";
+        fs::write(
+            source.join(".llm-wiki/project.json"),
+            format!(r#"{{"id":"{original_id}","createdAt":123}}"#),
+        )
+        .unwrap();
+        export_project_archive_inner(
+            source.to_string_lossy().into_owned(),
+            archive.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        import_project_archive_inner(
+            archive.to_string_lossy().into_owned(),
+            target.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        let imported: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(target.join(".llm-wiki/project.json")).unwrap(),
+        )
+        .unwrap();
+        let imported_id = imported
+            .get("id")
+            .and_then(|value| value.as_str())
+            .expect("imported project identity must include an id");
+        assert_ne!(
+            imported_id, original_id,
+            "imported archives must not clone the source project's stable UUID"
+        );
+        assert!(
+            Uuid::parse_str(imported_id).is_ok(),
+            "imported project id must be a UUID, got {imported_id}"
+        );
+        assert_ne!(imported.get("createdAt"), Some(&serde_json::json!(123)));
+        assert_eq!(
+            fs::read_to_string(source.join(".llm-wiki/project.json")).unwrap(),
+            format!(r#"{{"id":"{original_id}","createdAt":123}}"#)
+        );
+
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(target);
+        let _ = fs::remove_file(archive);
     }
 
     #[test]
@@ -252,6 +304,9 @@ fn import_project_archive_inner(
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
         let rel = Path::new(entry.name());
+        if is_project_identity_file(rel) {
+            continue;
+        }
         let target = root.join(rel);
         if entry.is_dir() {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -263,7 +318,31 @@ fn import_project_archive_inner(
         let mut output = File::create(target).map_err(|e| e.to_string())?;
         std::io::copy(&mut entry, &mut output).map_err(|e| e.to_string())?;
     }
+    reissue_imported_project_identity(&root)?;
     Ok(root.to_string_lossy().into_owned())
+}
+
+fn is_project_identity_file(rel: &Path) -> bool {
+    rel == Path::new(".llm-wiki").join("project.json")
+}
+
+fn reissue_imported_project_identity(root: &Path) -> Result<(), String> {
+    let dir = root.join(".llm-wiki");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let identity = serde_json::json!({
+        "id": Uuid::new_v4().to_string(),
+        "createdAt": created_at,
+    });
+    let serialized = serde_json::to_vec_pretty(&identity).map_err(|e| e.to_string())?;
+    let path = dir.join("project.json");
+    let mut file = File::create(&path).map_err(|e| e.to_string())?;
+    file.write_all(&serialized).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Serialize)]

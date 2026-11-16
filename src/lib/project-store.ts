@@ -9,6 +9,13 @@ const STORE_NAME = "app-state.json"
 const RECENT_PROJECTS_KEY = "recentProjects"
 const LAST_PROJECT_KEY = "lastProject"
 
+function recentProjectPathKey(path: string): string {
+  const normalized = normalizePath(path).replace(/\/+$/, "") || "/"
+  return /^[A-Za-z]:($|\/)/.test(normalized) || normalized.startsWith("//")
+    ? normalized.toLowerCase()
+    : normalized
+}
+
 async function getStore() {
   return load(STORE_NAME, { autoSave: true, defaults: {} })
 }
@@ -26,19 +33,33 @@ export async function getLastProject(): Promise<WikiProject | null> {
 }
 
 export async function saveLastProject(project: WikiProject): Promise<void> {
-  const store = await getStore()
-  await store.set(LAST_PROJECT_KEY, project)
-  await addToRecentProjects(project)
+  await writeRecentProject(project, true)
 }
 
 export async function addToRecentProjects(
   project: WikiProject
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-  const filtered = existing.filter((p) => p.path !== project.path)
-  const updated = [project, ...filtered].slice(0, 10)
-  await store.set(RECENT_PROJECTS_KEY, updated)
+  await writeRecentProject(project, false)
+}
+
+async function writeRecentProject(project: WikiProject, updateLastProject: boolean): Promise<void> {
+  const write = recentProjectsWrite.then(async () => {
+    const store = await getStore()
+    if (updateLastProject) {
+      await store.set(LAST_PROJECT_KEY, project)
+    }
+    const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+    const projectKey = recentProjectPathKey(project.path)
+    const filtered = existing.filter((p) => recentProjectPathKey(p.path) !== projectKey)
+    const updated = [project, ...filtered].slice(0, 10)
+    await store.set(RECENT_PROJECTS_KEY, updated)
+    // Opening a project is also the durable startup pointer update path.
+    // Do not leave it behind the store's 100ms auto-save debounce: the app
+    // can be closed immediately after the window appears.
+    await store.save()
+  })
+  recentProjectsWrite = write.catch(() => {})
+  await write
 }
 
 const LLM_CONFIG_KEY = "llmConfig"
@@ -49,6 +70,10 @@ const PROJECT_LLM_OVERRIDES_KEY = "projectLlmOverrides"
 const CUSTOM_LLM_PRESETS_KEY = "customLlmPresets"
 let projectLlmOverrideWrite = Promise.resolve()
 let customLlmPresetWrite = Promise.resolve()
+let recentProjectsWrite = Promise.resolve()
+let projectOutputLanguageWrite = Promise.resolve()
+let projectFileSyncWrite = Promise.resolve()
+let sourceWatchConfigWrite = Promise.resolve()
 
 export async function saveLlmConfig(config: LlmConfig): Promise<void> {
   const store = await getStore()
@@ -75,6 +100,7 @@ export async function saveCustomLlmPresets(presets: CustomLlmPreset[]): Promise<
   const write = customLlmPresetWrite.then(async () => {
     const store = await getStore()
     await store.set(CUSTOM_LLM_PRESETS_KEY, normalized)
+    await store.save()
   })
   customLlmPresetWrite = write.catch(() => {})
   await write
@@ -138,6 +164,7 @@ export async function saveProjectLlmOverride(
     const store = await getStore()
     const existing = (await store.get<Record<string, ProjectLlmOverride>>(PROJECT_LLM_OVERRIDES_KEY)) ?? {}
     await store.set(PROJECT_LLM_OVERRIDES_KEY, { ...existing, [projectId]: config })
+    await store.save()
   })
   projectLlmOverrideWrite = write.catch(() => {})
   await write
@@ -364,20 +391,29 @@ export async function loadScheduledImportConfig(projectPath: string): Promise<Sc
 export async function removeFromRecentProjects(
   path: string
 ): Promise<void> {
-  const store = await getStore()
-  const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
-  const updated = existing.filter((p) => p.path !== path)
-  await store.set(RECENT_PROJECTS_KEY, updated)
-  // ALSO clear the last-project pointer if it points at the project
-  // we just removed. Without this, App.tsx's startup auto-open
-  // (`getLastProject()` → `openProject()` → `saveLastProject()`)
-  // re-adds the removed entry back to recents on the next launch,
-  // making the delete look like it didn't take. Reported by user
-  // as "deleted project comes back after restart."
-  const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
-  if (last && last.path === path) {
-    await store.delete(LAST_PROJECT_KEY)
-  }
+  const write = recentProjectsWrite.then(async () => {
+    const store = await getStore()
+    const existing = (await store.get<WikiProject[]>(RECENT_PROJECTS_KEY)) ?? []
+    const pathKey = recentProjectPathKey(path)
+    const updated = existing.filter((p) => recentProjectPathKey(p.path) !== pathKey)
+    await store.set(RECENT_PROJECTS_KEY, updated)
+    // ALSO clear the last-project pointer if it points at the project
+    // we just removed. Without this, App.tsx's startup auto-open
+    // (`getLastProject()` → `openProject()` → `saveLastProject()`)
+    // re-adds the removed entry back to recents on the next launch,
+    // making the delete look like it didn't take. Reported by user
+    // as "deleted project comes back after restart."
+    const last = await store.get<WikiProject>(LAST_PROJECT_KEY)
+    if (last && recentProjectPathKey(last.path) === pathKey) {
+      await store.delete(LAST_PROJECT_KEY)
+    }
+    // Force-flush. autoSave is a 100ms debounce — removing a recent
+    // project and quitting (or auto-opening lastProject) inside that
+    // window would restore the entry on the next launch.
+    await store.save()
+  })
+  recentProjectsWrite = write.catch(() => {})
+  await write
 }
 
 const LANGUAGE_KEY = "language"
@@ -385,6 +421,7 @@ const LANGUAGE_KEY = "language"
 export async function saveLanguage(lang: string): Promise<void> {
   const store = await getStore()
   await store.set(LANGUAGE_KEY, lang)
+  await store.save()
 }
 
 export async function loadLanguage(): Promise<string | null> {
@@ -397,6 +434,7 @@ const THEME_KEY = "theme"
 export async function saveTheme(theme: "light" | "dark" | "system"): Promise<void> {
   const store = await getStore()
   await store.set(THEME_KEY, theme)
+  await store.save()
 }
 
 export async function loadTheme(): Promise<"light" | "dark" | "system" | null> {
@@ -411,12 +449,17 @@ const SOURCE_WATCH_CONFIG_KEY = "sourceWatchConfig"
 const SOURCE_WATCH_ALL_PROJECTS_KEY = "sourceWatchAllProjects"
 
 export async function saveOutputLanguage(lang: OutputLanguage, projectId?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
-    const existing = (await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
-    await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
-  }
-  await store.set(OUTPUT_LANGUAGE_KEY, lang)
+  const write = projectOutputLanguageWrite.then(async () => {
+    const store = await getStore()
+    if (projectId) {
+      const existing = (await store.get<Record<string, OutputLanguage>>(PROJECT_OUTPUT_LANGUAGE_KEY)) ?? {}
+      await store.set(PROJECT_OUTPUT_LANGUAGE_KEY, { ...existing, [projectId]: lang })
+    }
+    await store.set(OUTPUT_LANGUAGE_KEY, lang)
+    await store.save()
+  })
+  projectOutputLanguageWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadOutputLanguage(projectId?: string): Promise<OutputLanguage | null> {
@@ -429,14 +472,17 @@ export async function loadOutputLanguage(projectId?: string): Promise<OutputLang
 }
 
 export async function saveProjectFileSyncEnabled(enabled: boolean, projectId?: string): Promise<void> {
-  const store = await getStore()
-  if (projectId) {
+  const write = projectFileSyncWrite.then(async () => {
+    const store = await getStore()
     const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-    await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, [projectId]: enabled })
-    return
-  }
-  const existing = (await store.get<Record<string, boolean>>(PROJECT_FILE_SYNC_KEY)) ?? {}
-  await store.set(PROJECT_FILE_SYNC_KEY, { ...existing, default: enabled })
+    await store.set(PROJECT_FILE_SYNC_KEY, {
+      ...existing,
+      [projectId ?? "default"]: enabled,
+    })
+    await store.save()
+  })
+  projectFileSyncWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadProjectFileSyncEnabled(projectId?: string): Promise<boolean> {
@@ -452,14 +498,18 @@ export async function loadProjectFileSyncEnabled(projectId?: string): Promise<bo
 }
 
 export async function saveSourceWatchConfig(config: SourceWatchConfig, projectId?: string): Promise<void> {
-  const store = await getStore()
-  const normalized = normalizeSourceWatchConfig(config)
-  const existing = (await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
-  await store.set(SOURCE_WATCH_CONFIG_KEY, {
-    ...existing,
-    [projectId ?? "default"]: normalized,
+  const write = sourceWatchConfigWrite.then(async () => {
+    const store = await getStore()
+    const normalized = normalizeSourceWatchConfig(config)
+    const existing = (await store.get<Record<string, SourceWatchConfig>>(SOURCE_WATCH_CONFIG_KEY)) ?? {}
+    await store.set(SOURCE_WATCH_CONFIG_KEY, {
+      ...existing,
+      [projectId ?? "default"]: normalized,
+    })
+    await store.save()
   })
-  await store.save()
+  sourceWatchConfigWrite = write.catch(() => {})
+  await write
 }
 
 export async function loadSourceWatchConfig(projectId?: string): Promise<SourceWatchConfig> {
@@ -504,6 +554,7 @@ export async function saveUpdateCheckState(
 ): Promise<void> {
   const store = await getStore()
   await store.set(UPDATE_CHECK_STATE_KEY, state)
+  await store.save()
 }
 
 export async function loadUpdateCheckState(): Promise<PersistedUpdateCheckState | null> {

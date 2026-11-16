@@ -12,8 +12,9 @@ import { resolveTaskLlmConfig } from "@/lib/llm-task-routing"
 import { isReasoningOnlyResponseError, streamChat } from "@/lib/llm-client"
 import { supportsImageInput } from "@/lib/llm-providers"
 import { executeIngestWrites } from "@/lib/ingest"
-import { deleteFile, openPathInProject, readFile } from "@/commands/fs"
-import { getFileName, isAbsolutePath, normalizePath } from "@/lib/path-utils"
+import { openPathInProject, readFile } from "@/commands/fs"
+import { discardConversation } from "@/lib/persist"
+import { confineProjectFilePath, getFileName, normalizePath } from "@/lib/path-utils"
 import { hasConfiguredAnyTxt } from "@/lib/anytxt-search"
 import type { ChatAgentEvent, ChatAgentFileChange, ChatAgentStep, ChatUserInputRequest } from "@/lib/chat-agent-types"
 import type { ChatMessage as LlmChatMessage, ContentBlock } from "@/lib/llm-client"
@@ -25,6 +26,8 @@ import { getFileCategory, getFileExtension, isTextReadable } from "@/lib/file-ty
 import { refreshProjectFileTree } from "@/lib/project-file-tree-refresh"
 import { summarizeAgentFileChange } from "@/lib/agent-file-activity"
 import { ReferenceKnowledgeGraph } from "@/components/chat/reference-knowledge-graph"
+import { namedIconButtonProps, revealOnHoverOrFocusClass, selectRowProps } from "@/components/list-row-a11y"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 type InternalChatSendOptions = ChatSendOptions & {
   suppressUserMessage?: boolean
@@ -178,8 +181,6 @@ function ConversationSidebar({
   const deleteConversation = useChatStore((s) => s.deleteConversation)
   const setActiveConversation = useChatStore((s) => s.setActiveConversation)
 
-  const [hoveredId, setHoveredId] = useState<string | null>(null)
-
   const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt)
 
   function getMessageCount(convId: string): number {
@@ -201,73 +202,72 @@ function ConversationSidebar({
             }
           }}
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           {t("chat.newChat")}
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <nav aria-label={t("chat.conversations")} className="flex-1 overflow-y-auto py-1">
         {sorted.length === 0 ? (
           <p className="px-3 py-4 text-xs text-muted-foreground text-center">
             {t("chat.noConversationsYet")}
           </p>
         ) : (
-          sorted.map((conv) => {
-            const isActive = conv.id === activeConversationId
-            const msgCount = getMessageCount(conv.id)
-            return (
-              <div
-                key={conv.id}
-                className={`group relative mx-1 my-0.5 flex cursor-pointer flex-col rounded-md px-2 py-1.5 text-sm transition-colors ${
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "hover:bg-accent text-foreground"
-                }`}
-                onClick={() => {
-                  if (onSelectConversation) {
-                    onSelectConversation(conv.id)
-                  } else {
-                    setActiveConversation(conv.id)
-                  }
-                }}
-                onMouseEnter={() => setHoveredId(conv.id)}
-                onMouseLeave={() => setHoveredId(null)}
-              >
-                <div className="flex items-start justify-between gap-1">
-                  <span className="line-clamp-2 flex-1 text-xs font-medium leading-snug">
-                    {conv.title}
-                  </span>
-                  {hoveredId === conv.id && (
-                    <button
-                      className="flex-shrink-0 rounded p-0.5 text-muted-foreground hover:text-destructive"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        deleteConversation(conv.id)
-                        // Delete persisted chat file
-                        const proj = useWikiStore.getState().project
-                        if (proj) {
-                          deleteFile(`${proj.path}/.llm-wiki/chats/${conv.id}.json`).catch(() => {})
-                        }
-                      }}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span>{formatDate(conv.updatedAt)}</span>
-                  {msgCount > 0 && (
-                    <>
-                      <span>·</span>
-                      <span>{msgCount} {t("chat.msgCount")}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )
-          })
+          <ul className="m-0 list-none p-0">
+            {sorted.map((conv) => {
+              const isActive = conv.id === activeConversationId
+              const msgCount = getMessageCount(conv.id)
+              return (
+                <li key={conv.id} className="group relative mx-1 my-0.5">
+                  <button
+                    {...selectRowProps(isActive)}
+                    className={`flex w-full flex-col rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "hover:bg-accent text-foreground"
+                    }`}
+                    onClick={() => {
+                      if (onSelectConversation) {
+                        onSelectConversation(conv.id)
+                      } else {
+                        setActiveConversation(conv.id)
+                      }
+                    }}
+                  >
+                    <span className="line-clamp-2 pr-5 text-xs font-medium leading-snug">
+                      {conv.title}
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span>{formatDate(conv.updatedAt)}</span>
+                      {msgCount > 0 && (
+                        <>
+                          <span>·</span>
+                          <span>{msgCount} {t("chat.msgCount")}</span>
+                        </>
+                      )}
+                    </span>
+                  </button>
+                  <button
+                    {...namedIconButtonProps(t("chat.deleteConversation", { title: conv.title }))}
+                    className={`absolute right-1 top-1.5 rounded p-0.5 text-muted-foreground hover:text-destructive ${revealOnHoverOrFocusClass}`}
+                    onClick={() => {
+                      void discardConversation(
+                        useWikiStore.getState().project?.path,
+                        conv.id,
+                        deleteConversation,
+                      ).catch((err) => {
+                        console.error("Failed to delete conversation:", err)
+                      })
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         )}
-      </div>
+      </nav>
     </div>
   )
 }
@@ -294,12 +294,10 @@ function backendReferenceToMessageReference(ref: BackendAgentReference): Message
   }
 }
 
-function projectAbsolutePath(projectPath: string, path: string): string {
-  const pp = normalizePath(projectPath)
-  const normalized = normalizePath(path)
-  if (normalized.startsWith(`${pp}/`)) return normalized
-  if (isAbsolutePath(normalized)) return normalized
-  return `${pp}/${normalized.replace(/^\/+/, "")}`
+function confinedProjectFiles(projectPath: string, paths: string[]): string[] {
+  return paths
+    .map((path) => confineProjectFilePath(projectPath, path))
+    .filter((path): path is string => path !== null)
 }
 
 function isAgentWorkspacePath(filePath: string): boolean {
@@ -511,6 +509,7 @@ export function ChatPanel() {
   const activeRunIdRef = useRef<string | null>(null)
   const runIdRef = useRef(0)
   const dismissedGeneratedOutputsKeyRef = useRef<string | null>(null)
+  const generatedOutputRequestRef = useRef(0)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [agentEvents, setAgentEvents] = useState<ChatAgentEvent[]>([])
@@ -532,7 +531,8 @@ export function ChatPanel() {
   }, [activeConversationId])
   const buildGeneratedOutputPreview = useCallback(async (ref: MessageReference): Promise<ChatReferencePreview | null> => {
     if (!project) return null
-    const outputPath = projectAbsolutePath(project.path, ref.path)
+    const outputPath = confineProjectFilePath(project.path, ref.path)
+    if (!outputPath) return null
     try {
       const category = getFileCategory(outputPath)
       const shouldReadContent = isTextReadable(category) || category === "pdf"
@@ -559,20 +559,24 @@ export function ChatPanel() {
     if (useChatStore.getState().activeConversationId !== conversationId) return
     const outputs = (references ?? []).filter((ref) => ref.kind === "workspace")
     if (outputs.length === 0 || !project) return
-    const previews = outputs.map((ref) => {
-      const outputPath = projectAbsolutePath(project.path, ref.path)
-      return {
+    const requestId = ++generatedOutputRequestRef.current
+    const previews = outputs.flatMap((ref) => {
+      const outputPath = confineProjectFilePath(project.path, ref.path)
+      if (!outputPath) return []
+      return [{
         title: ref.title || getFileName(outputPath),
         path: outputPath,
         source: ref.source ?? "Workspace",
         content: "",
         snippet: ref.snippet,
-      }
+      }]
     })
     setReferencePreview(null)
     setGeneratedOutputPreviews(previews)
     if (outputs.length === 1) {
       void buildGeneratedOutputPreview(outputs[0]).then((preview) => {
+        if (requestId !== generatedOutputRequestRef.current) return
+        if (useChatStore.getState().activeConversationId !== conversationId) return
         if (preview) {
           setGeneratedOutputPreviews([preview])
           setGeneratedOutputPreview(preview)
@@ -606,25 +610,27 @@ export function ChatPanel() {
   }, [scrollKey])
 
   useEffect(() => {
+    generatedOutputRequestRef.current++
     setReferencePreview(null)
     setGeneratedOutputPreviews([])
     setGeneratedOutputPreview(null)
     dismissedGeneratedOutputsKeyRef.current = null
-  }, [activeConversationId])
+  }, [activeConversationId, project?.id])
 
   useEffect(() => {
     if (!project || activeStreaming || !latestGeneratedOutputMessage) return
     const outputs = (latestGeneratedOutputMessage.references ?? []).filter((ref) => ref.kind === "workspace")
     if (outputs.length === 0) return
-    const previews = outputs.map((ref) => {
-      const outputPath = projectAbsolutePath(project.path, ref.path)
-      return {
+    const previews = outputs.flatMap((ref) => {
+      const outputPath = confineProjectFilePath(project.path, ref.path)
+      if (!outputPath) return []
+      return [{
         title: ref.title || getFileName(outputPath),
         path: outputPath,
         source: ref.source ?? "Workspace",
         content: "",
         snippet: ref.snippet,
-      }
+      }]
     })
     const currentKey = generatedOutputPreviews.map((preview) => preview.path).join("\n")
     const nextKey = previews.map((preview) => preview.path).join("\n")
@@ -650,7 +656,11 @@ export function ChatPanel() {
   }, [])
 
   const openGeneratedOutputModal = useCallback((preview: ChatReferencePreview) => {
-    void loadGeneratedOutputPreview(preview).then(setGeneratedOutputPreview)
+    const requestId = ++generatedOutputRequestRef.current
+    void loadGeneratedOutputPreview(preview).then((loaded) => {
+      if (requestId !== generatedOutputRequestRef.current) return
+      setGeneratedOutputPreview(loaded)
+    })
   }, [loadGeneratedOutputPreview])
 
   const closeGeneratedOutputsPanel = useCallback(() => {
@@ -750,7 +760,7 @@ export function ChatPanel() {
 
       if (!sendOptions.suppressUserMessage) {
         const messageContextFiles = project
-          ? sendOptions.contextFiles.map((path) => projectAbsolutePath(project.path, path))
+          ? confinedProjectFiles(project.path, sendOptions.contextFiles)
           : []
         addMessageToConversation(convId, "user", text, images, messageContextFiles)
       }
@@ -851,7 +861,8 @@ export function ChatPanel() {
                 references.push(ref)
               }
               if (ref.kind === "workspace" && project) {
-                const outputPath = projectAbsolutePath(project.path, ref.path)
+                const outputPath = confineProjectFilePath(project.path, ref.path)
+                if (!outputPath) return
                 const preview: ChatReferencePreview = {
                   title: ref.title || getFileName(outputPath),
                   path: outputPath,
@@ -898,7 +909,8 @@ export function ChatPanel() {
               return
             }
             if (agentEvent.type === "fileChanged" && project && agentEvent.path && agentEvent.tool) {
-              const filePath = projectAbsolutePath(project.path, agentEvent.path)
+              const filePath = confineProjectFilePath(project.path, agentEvent.path)
+              if (!filePath) return
               const editSequence = ++fileEditSequence
               const editId = `${backendRunId}:${filePath}:${editSequence}`
               const editTimestamp = Date.now()
@@ -1643,20 +1655,42 @@ function GeneratedOutputPreviewDialog({
 }) {
   const { t } = useTranslation()
   const displayTitle = preview.title || getFileName(preview.path)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose()
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current?.querySelector<HTMLElement>("button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
     }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [onClose])
+  }, [])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6">
-      <div className="flex h-[86vh] w-[80vw] min-w-0 max-w-[1600px] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="generated-output-preview-title"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault()
+            onCloseRef.current()
+            return
+          }
+          trapTabInContainer(event.nativeEvent, event.currentTarget)
+        }}
+        className="flex h-[86vh] w-[80vw] min-w-0 max-w-[1600px] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl"
+      >
         <div className="flex min-h-12 items-center gap-3 border-b px-4 py-2">
           <Maximize2 className="h-4 w-4 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium" title={displayTitle}>{displayTitle}</div>
+            <div id="generated-output-preview-title" className="truncate text-sm font-medium" title={displayTitle}>{displayTitle}</div>
             <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={preview.path}>{preview.path}</div>
           </div>
           <button
@@ -1790,22 +1824,22 @@ function ContextDetailsPanel({
       // re-reading a file that may have changed since the answer was produced.
       if (reference.kind !== "external" && !content) {
         const normalizedProject = normalizePath(projectPath)
-        const directPath = isAbsolutePath(reference.path)
-          ? normalizePath(reference.path)
-          : projectAbsolutePath(normalizedProject, reference.path)
         const stem = getFileName(reference.path.replace(/^wiki\//, "").replace(/\.md$/i, ""))
-        const candidates = reference.kind === "workspace"
-          ? [directPath]
-          : [
-              directPath,
-              `${normalizedProject}/wiki/entities/${stem}.md`,
-              `${normalizedProject}/wiki/concepts/${stem}.md`,
-              `${normalizedProject}/wiki/sources/${stem}.md`,
-              `${normalizedProject}/wiki/queries/${stem}.md`,
-              `${normalizedProject}/wiki/synthesis/${stem}.md`,
-              `${normalizedProject}/wiki/comparisons/${stem}.md`,
-              `${normalizedProject}/wiki/${stem}.md`,
-            ]
+        const candidates = confinedProjectFiles(
+          normalizedProject,
+          reference.kind === "workspace"
+            ? [reference.path]
+            : [
+                reference.path,
+                `wiki/entities/${stem}.md`,
+                `wiki/concepts/${stem}.md`,
+                `wiki/sources/${stem}.md`,
+                `wiki/queries/${stem}.md`,
+                `wiki/synthesis/${stem}.md`,
+                `wiki/comparisons/${stem}.md`,
+                `wiki/${stem}.md`,
+              ],
+        )
         for (const candidate of candidates) {
           try {
             content = await readFile(candidate)

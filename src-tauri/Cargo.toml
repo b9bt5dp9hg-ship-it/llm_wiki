@@ -67,6 +67,8 @@ sha2 = "0.10"
 md-5 = "0.10"
 notify = "8"
 walkdir = "2"
+unicode-normalization = "0.1"
+yaml-rust2 = { version = "0.12", default-features = false }
 epub = "2.1.5"
 mobi = "0.8"
 html2text = { version = "0.17.1", default-features = false, features = ["xml"] }

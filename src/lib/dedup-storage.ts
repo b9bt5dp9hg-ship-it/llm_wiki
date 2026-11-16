@@ -13,6 +13,7 @@
  */
 import { readFile, writeFile, fileExists } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { withProjectLock } from "@/lib/project-mutex"
 
 const FILE_NAME = ".llm-wiki/dedup-not-duplicates.json"
 
@@ -54,13 +55,16 @@ export async function addNotDuplicate(
   slugs: string[],
 ): Promise<void> {
   if (slugs.length < 2) return
-  const list = await loadNotDuplicates(projectPath)
-  const normNew = canonicalKey(slugs)
-  for (const existing of list) {
-    if (canonicalKey(existing) === normNew) return // already there
-  }
-  list.push([...slugs].sort())
-  await saveNotDuplicates(projectPath, list)
+  const pp = normalizePath(projectPath)
+  await withProjectLock(`${pp}\0dedup-not-duplicates`, async () => {
+    const list = await loadNotDuplicates(pp)
+    const normNew = canonicalKey(slugs)
+    for (const existing of list) {
+      if (canonicalKey(existing) === normNew) return // already there
+    }
+    list.push([...slugs].sort())
+    await saveNotDuplicates(pp, list)
+  })
 }
 
 function canonicalKey(slugs: string[]): string {

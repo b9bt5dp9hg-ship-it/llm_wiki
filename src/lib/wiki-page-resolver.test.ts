@@ -179,6 +179,45 @@ describe("findInTreeByName", () => {
 })
 
 describe("resolveRelatedSlug", () => {
+  it.each([
+    "entities/foo",
+    "entities/foo.md",
+    "wiki/entities/foo",
+    "[[wiki/entities/foo.md|Foo]]",
+    "foo.md#Background",
+    "[[foo#Background|Foo]]",
+  ])("resolves the page in supported link form %s", (ref) => {
+    expect(resolveRelatedSlug(INDEX, ref, WIKI)).toBe(`${WIKI}/entities/foo.md`)
+  })
+
+  it("does not guess a target for a duplicated bare filename", () => {
+    expect(resolveRelatedSlug(DUP_INDEX, "dup", WIKI)).toBeNull()
+    expect(resolveRelatedSlug(DUP_INDEX, "dup.md", WIKI)).toBeNull()
+    expect(resolveRelatedSlug(DUP_INDEX, "a/dup", WIKI)).toBe(`${WIKI}/a/dup.md`)
+    expect(resolveRelatedSlug(DUP_INDEX, "wiki/b/dup.md", WIKI)).toBe(`${WIKI}/b/dup.md`)
+  })
+
+  it("normalizes Unicode and legacy case/space variants with exact precedence", () => {
+    const index = buildProjectPathIndexFromTree([
+      file(`${WIKI}/concepts/äpfel.md`),
+      file(`${WIKI}/target-page.md`),
+      file(`${WIKI}/Foo.md`),
+      file(`${WIKI}/foo.md`),
+    ])
+    expect(resolveRelatedSlug(index, "a\u0308pfel", WIKI)).toBe(`${WIKI}/concepts/äpfel.md`)
+    expect(resolveRelatedSlug(index, "Target Page", WIKI)).toBe(`${WIKI}/target-page.md`)
+    expect(resolveRelatedSlug(index, "foo", WIKI)).toBe(`${WIKI}/foo.md`)
+    expect(resolveRelatedSlug(index, "FOO", WIKI)).toBeNull()
+  })
+
+  it.each([
+    "wiki/wrong/foo.md", "wrong/foo", "../wiki/entities/foo.md",
+    "wiki/../wiki/entities/foo.md", "/p/wiki/entities/foo.md",
+    "https://example.com/foo.md", "raw/sources/foo.md",
+  ])("rejects unsafe or missing explicit paths without a basename fallback: %s", (ref) => {
+    expect(resolveRelatedSlug(INDEX, ref, WIKI)).toBeNull()
+  })
+
   it("appends .md and finds entities by bare slug", () => {
     expect(resolveRelatedSlug(INDEX, "foo", WIKI)).toBe(`${WIKI}/entities/foo.md`)
   })

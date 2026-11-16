@@ -1,10 +1,30 @@
 import { invoke } from "@tauri-apps/api/core"
-import { normalizePath } from "@/lib/path-utils"
+import { confinePreviewFilePath, normalizePath } from "@/lib/path-utils"
+import { imageUrlToAbsolute } from "@/lib/raw-source-resolver"
 import { useWikiStore } from "@/stores/wiki-store"
 
 export interface ImageRef {
   url: string
   alt: string
+}
+
+const PASSTHROUGH_IMAGE_RE = /^(https?:|data:|blob:|tauri:)/i
+
+function confineSearchImages(projectPath: string, images: ImageRef[] | undefined): ImageRef[] {
+  if (!Array.isArray(images) || images.length === 0) return []
+  const out: ImageRef[] = []
+  const seen = new Set<string>()
+  for (const image of images) {
+    const url = typeof image?.url === "string" ? image.url.trim() : ""
+    if (!url) continue
+    const confined = PASSTHROUGH_IMAGE_RE.test(url)
+      ? url
+      : confinePreviewFilePath(projectPath, imageUrlToAbsolute(url, projectPath))
+    if (!confined || seen.has(confined)) continue
+    seen.add(confined)
+    out.push({ ...image, url: confined })
+  }
+  return out
 }
 
 export interface SearchResult {
@@ -76,8 +96,56 @@ export async function searchWiki(
     embeddingConfig: embCfg,
   })
 
-  return response.results.map((result) => ({
-    ...result,
-    path: `${pp}/${normalizePath(result.path).replace(/^\/+/, "")}`,
-  }))
+  const results: SearchResult[] = []
+  for (const result of response.results) {
+    const confined = confinePreviewFilePath(pp, result.path)
+    if (!confined) continue
+    results.push({
+      ...result,
+      path: confined,
+      images: confineSearchImages(pp, result.images),
+    })
+  }
+  return results
+}
+
+export type SearchSessionOutcome =
+  | { status: "applied"; results: SearchResult[]; token: number }
+  | { status: "stale"; token: number }
+
+/**
+ * Latest-wins guard for overlapping `searchWiki` calls. A slower older
+ * query must not replace a newer result list (or refill it after clear).
+ */
+export function createSearchSession() {
+  let generation = 0
+
+  return {
+    get generation() {
+      return generation
+    },
+    invalidate() {
+      generation += 1
+    },
+    isCurrent(token: number) {
+      return token === generation
+    },
+    async run(projectPath: string, query: string): Promise<SearchSessionOutcome> {
+      const token = ++generation
+      if (!query.trim()) {
+        return token === generation
+          ? { status: "applied", results: [], token }
+          : { status: "stale", token }
+      }
+      try {
+        const results = await searchWiki(projectPath, query)
+        return token === generation
+          ? { status: "applied", results, token }
+          : { status: "stale", token }
+      } catch (error) {
+        if (token !== generation) return { status: "stale", token }
+        throw error
+      }
+    },
+  }
 }

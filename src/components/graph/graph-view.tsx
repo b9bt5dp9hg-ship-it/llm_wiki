@@ -33,6 +33,7 @@ import {
 import { NeuralNightOverlay } from "@/components/graph/neural-night-overlay"
 import { wikiTypeLabel } from "@/lib/wiki-page-types"
 import { useTranslation } from "react-i18next"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 type GraphThemePalette = {
   canvasBackground: string
@@ -669,7 +670,9 @@ export function GraphView() {
   const [graphPreview, setGraphPreview] = useState<GraphPreview | null>(null)
   const [nodeMenu, setNodeMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const graphContainerRef = useRef<HTMLDivElement>(null)
+  const graphPreviewRequest = useRef(0)
   const researchDialogTokenRef = useRef(0)
+  const researchDialogRef = useRef<HTMLDivElement>(null)
   // i18n node type labels (populated after mount to support language switching)
   const [nodeTypeLabels, setNodeTypeLabels] = useState<Record<string, string>>({})
   const graphSearchInputRef = useRef<HTMLInputElement>(null)
@@ -704,6 +707,7 @@ export function GraphView() {
     queries: string[]
     dismissKey?: string
   } | null>(null)
+  const researchDialogOpen = researchDialog !== null
   const lastLoadedVersion = useRef(-1)
   const graphLoadRequest = useRef(0)
 
@@ -769,18 +773,26 @@ export function GraphView() {
     return () => window.cancelAnimationFrame(id)
   }, [graphSearchOpen])
 
+  useEffect(() => {
+    graphPreviewRequest.current++
+    setGraphPreview(null)
+  }, [project?.id])
+
   const handleNodeClick = useCallback(
     async (nodeId: string) => {
       const node = nodes.find((n) => n.id === nodeId)
       if (!node) return
+      const requestId = ++graphPreviewRequest.current
       try {
         const content = await readFile(node.path)
+        if (requestId !== graphPreviewRequest.current) return
         setGraphPreview({
           path: node.path,
           title: node.label || getFileName(node.path),
           content,
         })
       } catch (err) {
+        if (requestId !== graphPreviewRequest.current) return
         console.error("Failed to open wiki page:", err)
       }
     },
@@ -821,6 +833,25 @@ export function GraphView() {
       setHighlightedNodes(new Set())
     }
   }, [highlightedNodes])
+
+  const closeResearchDialog = useCallback(() => {
+    researchDialogTokenRef.current += 1
+    setResearchDialog(null)
+  }, [])
+
+  useEffect(() => {
+    if (!researchDialogOpen) return
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    const frame = window.requestAnimationFrame(() => {
+      researchDialogRef.current?.querySelector<HTMLElement>("input, button")?.focus()
+    })
+    return () => {
+      window.cancelAnimationFrame(frame)
+      previousFocus?.focus()
+    }
+  }, [researchDialogOpen])
 
   const handleResearchClick = useCallback(async (gap: KnowledgeGap, dismissKey?: string) => {
     const store = useWikiStore.getState()
@@ -876,8 +907,8 @@ export function GraphView() {
       setDismissedInsights((prev) => new Set([...prev, researchDialog.dismissKey!]))
       setHighlightedNodes(new Set())
     }
-    setResearchDialog(null)
-  }, [researchDialog])
+    closeResearchDialog()
+  }, [closeResearchDialog, researchDialog])
 
   // Unmount sigma when panels resize or toggle to prevent WebGL crash.
   // Sigma crashes with "could not find suitable program for node type circle"
@@ -1531,6 +1562,8 @@ export function GraphView() {
                   <span className="text-sm font-medium">{t("graph.insights")}</span>
                 </div>
                 <button
+                  type="button"
+                  aria-label={t("common.close")}
                   className="p-1 rounded hover:bg-muted text-muted-foreground"
                   onClick={() => {
                     setShowInsights(false)
@@ -1568,6 +1601,8 @@ export function GraphView() {
                                 {conn.source.label} ↔ {conn.target.label}
                               </span>
                               <button
+                                type="button"
+                                aria-label={t("common.dismiss")}
                                 className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
                                 onClick={(e) => {
                                   e.stopPropagation()
@@ -1610,6 +1645,8 @@ export function GraphView() {
                           <div className="flex items-start justify-between gap-2 mb-1">
                             <div className="font-medium text-xs text-foreground">{gap.title}</div>
                             <button
+                              type="button"
+                              aria-label={t("common.dismiss")}
                               className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
                               title={t("common.dismiss")}
                               onClick={(e) => {
@@ -1655,18 +1692,31 @@ export function GraphView() {
       {/* Research Topic Confirmation Dialog */}
       {researchDialog && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-[480px] rounded-lg border bg-background shadow-xl">
+          <div
+            ref={researchDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="graph-research-dialog-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault()
+                closeResearchDialog()
+                return
+              }
+              trapTabInContainer(event.nativeEvent, event.currentTarget)
+            }}
+            className="w-[480px] rounded-lg border bg-background shadow-xl"
+          >
             <div className="flex items-center justify-between border-b px-4 py-3">
               <div className="flex items-center gap-2">
                 <Search className="h-4 w-4 text-primary" />
-                <span className="font-medium text-sm">{t("graph.deepResearch")}</span>
+                <span id="graph-research-dialog-title" className="font-medium text-sm">{t("graph.deepResearch")}</span>
               </div>
               <button
+                type="button"
+                aria-label={t("common.close")}
                 className="p-1 rounded hover:bg-muted text-muted-foreground"
-                onClick={() => {
-                  researchDialogTokenRef.current += 1
-                  setResearchDialog(null)
-                }}
+                onClick={closeResearchDialog}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1680,8 +1730,9 @@ export function GraphView() {
             ) : (
               <div className="p-4">
                 <div className="mb-3">
-                  <label className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.researchTopic")}</label>
+                  <label htmlFor="graph-research-topic" className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.researchTopic")}</label>
                   <input
+                    id="graph-research-topic"
                     type="text"
                     className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     value={researchDialog.topic}
@@ -1696,20 +1747,25 @@ export function GraphView() {
                   <label className="text-xs font-medium text-muted-foreground mb-1 block">{t("graph.searchQueries")}</label>
                   <div className="flex flex-col gap-1.5">
                     {researchDialog.queries.map((q, idx) => (
-                      <input
-                        key={idx}
-                        type="text"
-                        className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-                        value={q}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                          setResearchDialog((prev) => {
-                            if (!prev) return prev
-                            const newQueries = [...prev.queries]
-                            newQueries[idx] = e.target.value
-                            return { ...prev, queries: newQueries }
-                          })
-                        }
-                      />
+                      <div key={idx}>
+                        <label className="sr-only" htmlFor={`graph-research-query-${idx}`}>
+                          {t("graph.searchQueries")} {idx + 1}
+                        </label>
+                        <input
+                          id={`graph-research-query-${idx}`}
+                          type="text"
+                          className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+                          value={q}
+                          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                            setResearchDialog((prev) => {
+                              if (!prev) return prev
+                              const newQueries = [...prev.queries]
+                              newQueries[idx] = e.target.value
+                              return { ...prev, queries: newQueries }
+                            })
+                          }
+                        />
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -1717,10 +1773,7 @@ export function GraphView() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      researchDialogTokenRef.current += 1
-                      setResearchDialog(null)
-                    }}
+                    onClick={closeResearchDialog}
                   >
                     {t("graph.cancel")}
                   </Button>
@@ -1753,6 +1806,7 @@ function GraphPreviewPanel({
   onClose: () => void
   onContentChange: (content: string) => void
 }) {
+  const { t } = useTranslation()
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastSavedRef = useRef(preview.content)
   const category = getFileCategory(preview.path)
@@ -1797,6 +1851,7 @@ function GraphPreviewPanel({
         </span>
         <button
           type="button"
+          aria-label={t("common.close")}
           onClick={onClose}
           className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent"
         >

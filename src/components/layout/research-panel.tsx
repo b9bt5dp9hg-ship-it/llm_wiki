@@ -81,6 +81,8 @@ export function ResearchPanel() {
           )}
         </div>
         <button
+          type="button"
+          aria-label={t("common.close")}
           onClick={() => setPanelOpen(false)}
           className="rounded p-1 text-muted-foreground hover:bg-accent"
         >
@@ -93,6 +95,7 @@ export function ResearchPanel() {
         <input
           value={inputValue}
           dir="auto"
+          aria-label={t("research.inputPlaceholder")}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={(e) => {
             if (isImeComposing(e)) return
@@ -101,7 +104,7 @@ export function ResearchPanel() {
           className="flex-1 rounded border bg-background px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-ring"
           placeholder={t("research.inputPlaceholder")}
         />
-        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handleStartResearch} disabled={!inputValue.trim()}>
+        <Button size="icon" variant="ghost" className="h-7 w-7" aria-label={t("graph.startResearch")} onClick={handleStartResearch} disabled={!inputValue.trim()}>
           <Send className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -186,6 +189,8 @@ function SynthesisBlock({ synthesis, isStreaming }: { synthesis: string; isStrea
         {thinking && (
           <div className="mb-2">
             <button
+              type="button"
+              aria-expanded={!thinkingCollapsed}
               onClick={() => setThinkingCollapsed((v) => !v)}
               className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
             >
@@ -297,6 +302,8 @@ function ResearchTaskCard({
     <div className="rounded-lg border text-xs">
       {/* Header */}
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/50"
       >

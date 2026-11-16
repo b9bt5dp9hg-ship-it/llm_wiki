@@ -406,6 +406,11 @@ interface WikiState {
   selectedFile: string | null
   fileContent: string
   previewContentPath: string | null
+  /**
+   * Increments on every `openFileInPreview` so PreviewPanel can drop a
+   * pending auto-save even when path and injected content are unchanged.
+   */
+  previewContentNonce: number
   externalPreview: ExternalPreview | null
   /**
    * View that handed control to the full-width wiki preview. Closing the
@@ -498,6 +503,7 @@ export const useWikiStore = create<WikiState>((set) => ({
   selectedFile: null,
   fileContent: "",
   previewContentPath: null,
+  previewContentNonce: 0,
   externalPreview: null,
   previewReturnView: null,
   previewBackStack: [],
@@ -583,6 +589,7 @@ export const useWikiStore = create<WikiState>((set) => ({
       selectedFile,
       fileContent,
       previewContentPath: selectedFile,
+      previewContentNonce: state.previewContentNonce + 1,
       externalPreview: null,
       activeView: "wiki",
       previewReturnView:

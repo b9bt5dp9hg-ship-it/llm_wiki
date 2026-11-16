@@ -60,13 +60,19 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
 
       <div className="space-y-2">
         <Label>{t("settings.sections.interface.uiLanguage")}</Label>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="flex flex-wrap gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.interface.uiLanguage")}
+        >
           {UI_LANGUAGES.map((l) => {
             const active = draft.uiLanguage === l.value
             return (
               <button
                 key={l.value}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => setDraft("uiLanguage", l.value)}
                 className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
                   active
@@ -86,13 +92,19 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
 
       <div className="space-y-2">
         <Label>{t("settings.sections.interface.theme")}</Label>
-        <div className="flex flex-wrap gap-2">
+        <div
+          className="flex flex-wrap gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.interface.theme")}
+        >
           {THEMES.map((th) => {
             const active = draft.theme === th.value
             return (
               <button
                 key={th.value}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => {
                   setDraft("theme", th.value)
                   onThemeChange?.(th.value)
@@ -114,9 +126,10 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
       </div>
 
       <div className="space-y-2">
-        <Label>{t("settings.sections.interface.zoom")}</Label>
+        <Label htmlFor="interface-zoom">{t("settings.sections.interface.zoom")}</Label>
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={() => handleZoom(level - ZOOM_STEP)}
             disabled={level <= MIN_ZOOM_LEVEL}
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-30 disabled:pointer-events-none transition-colors"
@@ -127,6 +140,7 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
 
           <div className="relative flex-1 max-w-[70px]">
             <input
+              id="interface-zoom"
               type="text"
               inputMode="decimal"
               value={inputText}
@@ -141,6 +155,7 @@ export function InterfaceSection({ draft, setDraft, onThemeChange }: Props) {
           </div>
 
           <button
+            type="button"
             onClick={() => handleZoom(level + ZOOM_STEP)}
             disabled={level >= MAX_ZOOM_LEVEL}
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-30 disabled:pointer-events-none transition-colors"

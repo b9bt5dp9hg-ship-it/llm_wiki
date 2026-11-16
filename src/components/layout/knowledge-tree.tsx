@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import {
   FileText, Users, Lightbulb, BookOpen, HelpCircle, GitMerge, BarChart3, TrendingUp, Target, ChevronRight, ChevronDown, Layout, Globe, Trash2,
 } from "lucide-react"
@@ -14,6 +14,7 @@ import { inferWikiTypeFromPath, wikiTypeLabel } from "@/lib/wiki-page-types"
 import { filterRawSourceTree } from "@/lib/source-filter"
 import { useTranslation } from "react-i18next"
 import { useAppDialog } from "@/stores/app-dialog-store"
+import { createKnowledgeTreeLoadSession } from "./knowledge-tree-load-session"
 import { parseSources } from "@/lib/sources-merge"
 import { filterPagesBySource, listPageSourceIdentities } from "@/lib/knowledge-source-filter"
 import { flattenFilesNaturally } from "@/lib/file-tree-order"
@@ -53,6 +54,7 @@ export function KnowledgeTree() {
   const openPathInPreview = useWikiStore((s) => s.openPathInPreview)
   const dataVersion = useWikiStore((s) => s.dataVersion)
   const [pages, setPages] = useState<WikiPageInfo[]>([])
+  const pageLoadSession = useRef(createKnowledgeTreeLoadSession()).current
   const [selectedSource, setSelectedSource] = useState<string | null>(null)
   const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set(["overview", "entity", "concept", "source"]))
   // Two-stage delete: first click arms the row, second click executes.
@@ -61,43 +63,50 @@ export function KnowledgeTree() {
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
 
   const loadPages = useCallback(async () => {
-    if (!project) return
+    if (!project) {
+      pageLoadSession.invalidate()
+      setPages([])
+      return
+    }
     const pp = normalizePath(project.path)
     try {
-      const wikiTree = await listDirectory(`${pp}/wiki`)
-      const mdFiles = flattenMdFiles(wikiTree)
+      const outcome = await pageLoadSession.load(async () => {
+        const wikiTree = await listDirectory(`${pp}/wiki`)
+        const mdFiles = flattenMdFiles(wikiTree)
 
-      const pageInfos: WikiPageInfo[] = []
-      for (const file of mdFiles) {
-        // Skip index.md and log.md
-        if (file.name === "index.md" || file.name === "log.md") continue
-        try {
-          const content = await readFile(file.path)
-          const info = parsePageInfo(file.path, file.name, content)
-          pageInfos.push(info)
-        } catch {
-          pageInfos.push({
-            path: file.path,
-            title: file.name.replace(".md", "").replace(/-/g, " "),
-            type: "other",
-            tags: [],
-            sources: [],
-          })
+        const pageInfos: WikiPageInfo[] = []
+        for (const file of mdFiles) {
+          // Skip index.md and log.md
+          if (file.name === "index.md" || file.name === "log.md") continue
+          try {
+            const content = await readFile(file.path)
+            const info = parsePageInfo(file.path, file.name, content)
+            pageInfos.push(info)
+          } catch {
+            pageInfos.push({
+              path: file.path,
+              title: file.name.replace(".md", "").replace(/-/g, " "),
+              type: "other",
+              tags: [],
+              sources: [],
+            })
+          }
         }
-      }
-
-      setPages(pageInfos)
+        return pageInfos
+      })
+      if (outcome.status === "applied") setPages(outcome.value)
     } catch {
       setPages([])
     }
-  }, [project])
+  }, [pageLoadSession, project])
 
   // Reload when wiki data changes. Do not key this off the visible
   // sidebar file tree: lazy directory expansion mutates that tree and
   // should not force a full wiki metadata re-parse.
   useEffect(() => {
     loadPages()
-  }, [loadPages, dataVersion])
+    return () => pageLoadSession.invalidate()
+  }, [loadPages, dataVersion, pageLoadSession])
 
   useEffect(() => {
     setSelectedSource(null)

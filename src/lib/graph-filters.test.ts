@@ -100,6 +100,45 @@ describe("graph filters", () => {
     expect(out.nodes.map((n) => n.id)).not.toContain("isolated")
   })
 
+  it("keeps connected pages even when cached link counts are zero", () => {
+    const connectedNodes = nodes.slice(1, 3).map((node) => ({ ...node, linkCount: 0 }))
+    const connectedEdges = [{ source: "concept-a", target: "entity-b", weight: 1 }]
+    const out = applyGraphFilters(connectedNodes, connectedEdges, makeFilters({ hideIsolated: true }))
+
+    expect(out.nodes).toEqual(connectedNodes)
+    expect(out.edges).toEqual(connectedEdges)
+  })
+
+  it("hides a page whose only connection is a hidden structural page", () => {
+    const out = applyGraphFilters(nodes.slice(0, 2), [edges[0]], makeFilters({ hideIsolated: true }))
+
+    expect(out.nodes).toEqual([])
+    expect(out.hiddenNodeIds).toEqual(new Set(["index", "concept-a"]))
+  })
+
+  it.each([
+    { hiddenTypes: new Set(["entity"]) },
+    { hiddenNodeIds: new Set(["entity-b"]) },
+    { maxLinks: 2 },
+  ])("hides pages left disconnected by other filters: %o", (otherFilters) => {
+    const out = applyGraphFilters(nodes.slice(1), edges, makeFilters({
+      ...otherFilters,
+      hideIsolated: true,
+    }))
+
+    expect(out.nodes).toEqual([])
+    expect(out.edges).toEqual([])
+    expect(out.hiddenNodeIds).toContain("source-c")
+    expect(out.hiddenNodeIds).toContain("concept-a")
+  })
+
+  it("ignores edges to absent nodes when hiding isolated pages", () => {
+    const out = applyGraphFilters(nodes.slice(1, 2), [edges[2]], makeFilters({ hideIsolated: true }))
+
+    expect(out.nodes).toEqual([])
+    expect(out.edges).toEqual([])
+  })
+
   it("reports whether filters are active", () => {
     expect(hasActiveGraphFilters(makeFilters({ hideStructural: false }))).toBe(false)
     expect(hasActiveGraphFilters(makeFilters())).toBe(true)

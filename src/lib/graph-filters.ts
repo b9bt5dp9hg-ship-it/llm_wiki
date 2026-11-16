@@ -62,10 +62,6 @@ export function applyGraphFilters(
       hiddenNodeIds.add(node.id)
       continue
     }
-    if (filters.hideIsolated && node.linkCount <= 0) {
-      hiddenNodeIds.add(node.id)
-      continue
-    }
     if (filters.minLinks !== undefined && node.linkCount < filters.minLinks) {
       hiddenNodeIds.add(node.id)
       continue
@@ -75,11 +71,25 @@ export function applyGraphFilters(
     }
   }
 
-  const visibleNodes = nodes.filter((node) => !hiddenNodeIds.has(node.id))
-  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id))
+  const eligibleNodes = nodes.filter((node) => !hiddenNodeIds.has(node.id))
+  const eligibleNodeIds = new Set(eligibleNodes.map((node) => node.id))
   const visibleEdges = edges.filter(
-    (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    (edge) => eligibleNodeIds.has(edge.source) && eligibleNodeIds.has(edge.target),
   )
+
+  if (filters.hideIsolated) {
+    // Isolation belongs to the visible graph after all other filters. Removing
+    // zero-degree nodes cannot remove another node's edge, so one pass suffices.
+    const connectedNodeIds = new Set<string>()
+    for (const edge of visibleEdges) {
+      connectedNodeIds.add(edge.source)
+      connectedNodeIds.add(edge.target)
+    }
+    for (const node of eligibleNodes) {
+      if (!connectedNodeIds.has(node.id)) hiddenNodeIds.add(node.id)
+    }
+  }
+  const visibleNodes = eligibleNodes.filter((node) => !hiddenNodeIds.has(node.id))
 
   return { nodes: visibleNodes, edges: visibleEdges, hiddenNodeIds }
 }

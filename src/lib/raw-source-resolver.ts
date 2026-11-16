@@ -26,6 +26,7 @@ import {
 } from "@/lib/source-identity"
 import type { FileNode } from "@/types/wiki"
 import { filterRawSourceTree } from "@/lib/source-filter"
+import { collapsePathSegments, isAbsolutePath } from "@/lib/path-utils"
 
 export async function findRawSourceForImage(
   imageUrl: string,
@@ -79,16 +80,23 @@ export async function findRawSourceForImage(
  * safety-net section needs to be promoted to absolute first.
  *
  * Idempotent: passing an already-absolute URL returns it unchanged.
+ *
+ * Nested wiki pages (`wiki/sources/*.md`) persist generated media as
+ * `../media/<slug>/img-N.png` so Obsidian can resolve them. Joining
+ * that form under `wiki/` without rewriting it would climb to
+ * `<project>/media/` and miss the extractor's absolute
+ * `<project>/wiki/media/...` `data-mdsrc` attributes.
  */
 export function imageUrlToAbsolute(
   imageUrl: string,
   projectPath: string,
 ): string {
-  const isAbsolute =
-    imageUrl.startsWith("/") ||
-    /^[a-zA-Z]:/.test(imageUrl) ||
-    imageUrl.startsWith("\\\\")
-  if (isAbsolute) return imageUrl
-  const cleaned = imageUrl.replace(/^\.\//, "")
-  return `${projectPath.replace(/\/+$/, "")}/wiki/${cleaned}`
+  if (isAbsolutePath(imageUrl)) return imageUrl
+  const cleaned = imageUrl.replace(/\\/g, "/").replace(/^\.\//, "")
+  const wikiRelative = cleaned.startsWith("../media/")
+    ? cleaned.slice("../".length)
+    : cleaned
+  return collapsePathSegments(
+    `${projectPath.replace(/\/+$/, "")}/wiki/${wikiRelative}`,
+  )
 }

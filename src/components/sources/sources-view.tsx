@@ -59,6 +59,7 @@ export function SourcesView() {
   const [ingestedIdentities, setIngestedIdentities] = useState<string[]>([])
   const [queueSnapshot, setQueueSnapshot] = useState<IngestTask[]>(() => [...getQueue()])
   const [sourceQuery, setSourceQuery] = useState("")
+  const sourceOpenRequest = useRef(0)
   /**
    * Path of the source-tree node currently in "click again to
    * confirm delete" state. Lifted up here (rather than living
@@ -100,6 +101,7 @@ export function SourcesView() {
   }, [loadSources, dataVersion])
 
   useEffect(() => {
+    sourceOpenRequest.current++
     setSourceQuery("")
   }, [project?.id])
 
@@ -268,10 +270,13 @@ export function SourcesView() {
   }
 
   async function handleOpenSource(node: FileNode) {
+    const requestId = ++sourceOpenRequest.current
     try {
       const content = await readFile(node.path)
+      if (requestId !== sourceOpenRequest.current) return
       openFileInPreview(node.path, content)
     } catch (err) {
+      if (requestId !== sourceOpenRequest.current) return
       console.error("Failed to read source:", err)
     }
   }
@@ -791,6 +796,8 @@ function SourceTree({
                 style={{ paddingLeft: `${depth * 16 + 4}px` }}
               >
                 <button
+                  type="button"
+                  aria-expanded={!isCollapsed}
                   onClick={() => {
                     if (!forceExpanded) toggle(node.path)
                   }}
@@ -920,6 +927,7 @@ function DeleteButton({
         size="sm"
         className="h-7 shrink-0 px-2 text-[11px] font-semibold animate-pulse"
         title={hint}
+        aria-label={hint}
         onClick={onClick}
       >
         <Trash2 className="mr-1 h-3.5 w-3.5" />
@@ -933,6 +941,7 @@ function DeleteButton({
       size="icon"
       className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
       title={hint}
+      aria-label={hint}
       onClick={onClick}
     >
       <Trash2 className="h-3.5 w-3.5" />

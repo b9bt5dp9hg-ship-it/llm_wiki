@@ -10,7 +10,7 @@ import {
 } from "@/commands/fs"
 import type { WikiProject, FileNode } from "@/types/wiki"
 import type { LlmConfig } from "@/stores/wiki-store"
-import { enqueueBatch } from "@/lib/ingest-queue"
+import { discardTasksForSources, enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getTaskLlmConfig } from "@/lib/llm-task-routing"
 import { getFileName, getFileStem, getRelativePath, normalizePath } from "@/lib/path-utils"
@@ -37,6 +37,7 @@ import { collectAllFilesIncludingDot } from "@/lib/sources-tree-delete"
 import { isPathAllowedBySourceWatch, normalizeSourceWatchConfig } from "@/lib/source-watch-config"
 import { isSensitiveConfigSourceFile } from "@/lib/source-filter"
 import { naturalCompare } from "@/lib/natural-sort"
+import { withProjectLock } from "@/lib/project-mutex"
 import type { SourceWatchConfig } from "@/stores/wiki-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { preprocessSourceFiles } from "@/lib/source-preprocess"
@@ -140,6 +141,14 @@ export async function migrateSourcePath(
   newSourcePath: string,
 ): Promise<number> {
   const pp = normalizePath(projectPath)
+  return withProjectLock(pp, () => migrateSourcePathLocked(pp, oldSourcePath, newSourcePath))
+}
+
+async function migrateSourcePathLocked(
+  pp: string,
+  oldSourcePath: string,
+  newSourcePath: string,
+): Promise<number> {
   const oldIdentity = sourceIdentityForPath(pp, oldSourcePath)
   const newIdentity = sourceIdentityForPath(pp, newSourcePath)
   // Cache keys preserve spelling, so case-only renames still require a
@@ -478,6 +487,12 @@ export async function deleteSourceFiles(
     return { deletedWikiPaths: [], rewrittenSourcePages: 0, skippedPages: 0 }
   }
 
+  try {
+    await discardTasksForSources(sourceInfos.map((info) => info.source))
+  } catch (err) {
+    console.warn("[source-lifecycle] failed to discard ingest tasks for deleted sources:", err)
+  }
+
   const deletingNames = new Set(sourceInfos.map((info) => info.fileName.toLowerCase()))
   const deletingIdentities = new Set(
     sourceInfos.map((info) => sourceReferenceIdentity(info.identity).toLowerCase()),
@@ -514,46 +529,48 @@ export async function deleteSourceFiles(
   let rewrittenSourcePages = 0
   let skippedPages = 0
 
-  let allMd: FileNode[] = []
-  try {
-    allMd = flattenMd(await listDirectory(`${pp}/wiki`))
-  } catch (err) {
-    console.warn("[source-lifecycle] failed to scan wiki sources during delete:", err)
-  }
-
-  for (const file of allMd) {
-    let content: string
+  await withProjectLock(pp, async () => {
+    let allMd: FileNode[] = []
     try {
-      content = await readFile(file.path)
+      allMd = flattenMd(await listDirectory(`${pp}/wiki`))
     } catch (err) {
-      console.warn(`[source-lifecycle] failed to read ${file.path}:`, err)
-      continue
+      console.warn("[source-lifecycle] failed to scan wiki sources during delete:", err)
     }
 
-    const sources = parseSources(content)
-    if (sources.length === 0) {
-      skippedPages++
-      continue
-    }
-
-    const survivors = sources.filter(
-      (source) => !sourceNameMatchesAny(source, deletingIdentities, deletingNames),
-    )
-    if (survivors.length === sources.length) {
-      continue
-    }
-
-    if (survivors.length === 0) {
-      pagesToDelete.push(file.path)
-    } else {
+    for (const file of allMd) {
+      let content: string
       try {
-        await writeFile(file.path, writeSources(content, survivors))
-        rewrittenSourcePages++
+        content = await readFile(file.path)
       } catch (err) {
-        console.warn(`[source-lifecycle] failed to rewrite sources for ${file.path}:`, err)
+        console.warn(`[source-lifecycle] failed to read ${file.path}:`, err)
+        continue
+      }
+
+      const sources = parseSources(content)
+      if (sources.length === 0) {
+        skippedPages++
+        continue
+      }
+
+      const survivors = sources.filter(
+        (source) => !sourceNameMatchesAny(source, deletingIdentities, deletingNames),
+      )
+      if (survivors.length === sources.length) {
+        continue
+      }
+
+      if (survivors.length === 0) {
+        pagesToDelete.push(file.path)
+      } else {
+        try {
+          await writeFile(file.path, writeSources(content, survivors))
+          rewrittenSourcePages++
+        } catch (err) {
+          console.warn(`[source-lifecycle] failed to rewrite sources for ${file.path}:`, err)
+        }
       }
     }
-  }
+  })
 
   let deletedWikiPaths: string[] = []
   if (pagesToDelete.length > 0) {
@@ -662,30 +679,47 @@ export async function cleanupDeletedWikiPages(
   }
 }
 
+const reservedDestPaths = new Set<string>()
+
+export function __resetUniqueDestReservationsForTesting(): void {
+  reservedDestPaths.clear()
+}
+
+function destIsReserved(path: string): boolean {
+  return reservedDestPaths.has(normalizePath(path))
+}
+
+function reserveDestPath(path: string): string {
+  reservedDestPaths.add(normalizePath(path))
+  return path
+}
+
 export async function getUniqueDestPath(dir: string, fileName: string): Promise<string> {
-  const basePath = `${dir}/${fileName}`
-
-  if (!(await fileExists(basePath))) {
-    return basePath
-  }
-
-  const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ""
-  const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
-
-  const withDate = `${dir}/${nameWithoutExt}-${date}${ext}`
-  if (!(await fileExists(withDate))) {
-    return withDate
-  }
-
-  for (let i = 2; i <= 99; i++) {
-    const withCounter = `${dir}/${nameWithoutExt}-${date}-${i}${ext}`
-    if (!(await fileExists(withCounter))) {
-      return withCounter
+  const dirNorm = normalizePath(dir)
+  return withProjectLock(`${dirNorm}\0unique-dest`, async () => {
+    const basePath = `${dir}/${fileName}`
+    if (!destIsReserved(basePath) && !(await fileExists(basePath))) {
+      return reserveDestPath(basePath)
     }
-  }
 
-  return `${dir}/${nameWithoutExt}-${date}-${Date.now()}${ext}`
+    const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ""
+    const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+
+    const withDate = `${dir}/${nameWithoutExt}-${date}${ext}`
+    if (!destIsReserved(withDate) && !(await fileExists(withDate))) {
+      return reserveDestPath(withDate)
+    }
+
+    for (let i = 2; i <= 99; i++) {
+      const withCounter = `${dir}/${nameWithoutExt}-${date}-${i}${ext}`
+      if (!destIsReserved(withCounter) && !(await fileExists(withCounter))) {
+        return reserveDestPath(withCounter)
+      }
+    }
+
+    return reserveDestPath(`${dir}/${nameWithoutExt}-${date}-${Date.now()}${ext}`)
+  })
 }
 
 async function appendSourceDeleteLog(

@@ -42,6 +42,8 @@ function TreeNode({
     return (
       <div>
         <button
+          type="button"
+          aria-expanded={expanded}
           onClick={() => void handleToggle()}
           className="flex w-full items-center gap-1 py-1 text-sm text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground"
           style={{ paddingLeft }}
@@ -54,7 +56,7 @@ function TreeNode({
           <Folder className="h-3.5 w-3.5 shrink-0 text-blue-400" />
           <span className="truncate">{node.name}</span>
           {loadingChildren && (
-            <span className="ml-auto pr-2 text-[10px] text-muted-foreground">
+            <span role="status" className="ml-auto pr-2 text-[10px] text-muted-foreground">
               {t("common.loading", { defaultValue: "Loading..." })}
             </span>
           )}
@@ -73,6 +75,8 @@ function TreeNode({
 
   return (
     <button
+      type="button"
+      aria-current={isSelected ? "page" : undefined}
       onClick={() => openPathInPreview(node.path)}
       className={`flex w-full items-center gap-1 py-1 text-sm ${
         isSelected

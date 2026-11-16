@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "@/commands/fs"
 import { autoIngest } from "./ingest"
-import { normalizePath, isAbsolutePath } from "@/lib/path-utils"
+import { normalizePath, isAbsolutePath, getRelativePath, confineWikiFilePath } from "@/lib/path-utils"
 import { getProjectPathById } from "@/lib/project-identity"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { getTaskLlmConfig } from "@/lib/llm-task-routing"
@@ -86,6 +86,10 @@ let currentProjectPath = ""
  * before the old run observes its AbortSignal. In that case the old output
  * must still be discarded before the restarted pending task can run. */
 let cancelledInFlightTaskIds = new Set<string>()
+/** Task runs discarded because their source was deleted. Unlike user
+ *  cancel, completed writes must be undone — otherwise autoIngest can
+ *  recreate wiki pages and ingest-cache entries after the delete. */
+let discardedInFlightTaskIds = new Set<string>()
 let completedSinceIdle = 0
 // Track whether any task has been processed since the last drain.
 // Prevents the sweep from running on every idle/no-op call.
@@ -187,8 +191,89 @@ function normalizeSourcePathForQueue(sourcePath: string): string {
   return normalized
 }
 
+/**
+ * Strip a project prefix and reject paths that leave the project tree.
+ * Live enqueue and restore both use this before applying their extra
+ * content-area rules. Absolute paths outside the project, `..`, empty
+ * segments, and control characters never become queued source paths.
+ */
+function relativeIngestSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  if (typeof sourcePath !== "string") return null
+  const normalized = normalizePath(sourcePath.trim())
+  if (!normalized) return null
+  if (/[\x00-\x1f]/.test(normalized)) return null
+  const pp = normalizePath(projectPath)
+  const relative = isAbsolutePath(normalized)
+    ? getRelativePath(normalized, pp)
+    : normalized
+  if (!relative || isAbsolutePath(relative)) return null
+  if (relative.startsWith("/") || relative.startsWith("\\") || /^[a-zA-Z]:/.test(relative)) {
+    return null
+  }
+  const posix = relative.replace(/\\/g, "/")
+  if (posix.endsWith("/")) return null
+  const segments = posix.split("/")
+  if (segments.some((seg) => seg === "" || seg === "." || seg === "..")) return null
+  return posix
+}
+
+/**
+ * Restored ingest tasks come from `.llm-wiki/ingest-queue.json`, which is
+ * not a trusted writer. A poisoned file can name `wiki/`, `.llm-wiki/`,
+ * or a path that walks out of the project via `..`.
+ */
+function isSafeRestoredIngestSourcePath(p: string): boolean {
+  if (!p.startsWith("raw/sources/")) return false
+  const rest = p.slice("raw/sources/".length)
+  return Boolean(rest) && !rest.endsWith("/")
+}
+
+function confineRestoredSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  const relative = relativeIngestSourcePath(sourcePath, projectPath)
+  return relative && isSafeRestoredIngestSourcePath(relative) ? relative : null
+}
+
+/**
+ * Live enqueue is trusted less than a watcher path looks: clip-server,
+ * scheduled import, and UI imports can still name `/etc/passwd`, `wiki/`,
+ * or a `..` walk. Keep the task inside the project and out of wiki /
+ * `.llm-wiki`. Bare filenames remain valid for in-project sources.
+ */
+function confineLiveIngestSourcePath(sourcePath: unknown, projectPath: string): string | null {
+  const relative = relativeIngestSourcePath(sourcePath, projectPath)
+  if (!relative) return null
+  const root = relative.split("/")[0]
+  if (root === "wiki" || root === ".llm-wiki" || root === ".obsidian") return null
+  return relative
+}
+
 function sameQueuedSourcePath(a: string, b: string): boolean {
   return normalizeSourcePathForQueue(a) === normalizeSourcePathForQueue(b)
+}
+
+function isSourceSummaryWikiPath(filePath: string): boolean {
+  const normalized = normalizePath(filePath).replace(/\\/g, "/")
+  return normalized.includes("/wiki/sources/") || normalized.startsWith("wiki/sources/")
+}
+
+async function undoDiscardedSourceIngest(
+  projectPath: string,
+  sourcePath: string,
+  writtenFiles: readonly string[] = [],
+): Promise<void> {
+  const sourceSummaries = writtenFiles.filter((filePath) => isSourceSummaryWikiPath(filePath))
+  if (sourceSummaries.length > 0) {
+    await cleanupWrittenFiles(projectPath, sourceSummaries)
+  }
+  try {
+    const { deleteSourceFiles } = await import("@/lib/source-lifecycle")
+    await deleteSourceFiles(projectPath, [sourcePath], {
+      fileAlreadyDeleted: true,
+      logReason: "ingest discarded after source delete",
+    })
+  } catch (err) {
+    console.warn("[Ingest Queue] Failed to undo discarded ingest writes:", err)
+  }
 }
 
 function isStructuralWikiPath(filePath: string): boolean {
@@ -208,10 +293,11 @@ function upsertQueuedIngestTask(
   sourcePath: string,
   folderContext: string,
 ): string {
+  const normalizedSourcePath = confineLiveIngestSourcePath(sourcePath, currentProjectPath)
+  if (!normalizedSourcePath) return ""
   if (queue.length === 0 && activeRuns.size === 0) {
     resetQueueAccounting()
   }
-  const normalizedSourcePath = normalizeSourcePathForQueue(sourcePath)
   const pendingOrStopped = queue.find((t) =>
     t.projectId === projectId &&
     (t.status === "pending" || t.status === "failed" || t.status === "cancelled") &&
@@ -277,9 +363,14 @@ export async function cleanupWrittenFiles(
   const { cascadeDeleteWikiPage } = await import("@/lib/wiki-page-delete")
   for (const filePath of filePaths) {
     if (isStructuralWikiPath(filePath)) continue
-    const fullPath = isAbsolutePath(filePath)
+    const absolute = isAbsolutePath(filePath)
+    const fullPath = absolute
       ? normalizePath(filePath)
       : `${projectPath}/${filePath}`
+    // Absolute paths must already point into this project's wiki; never hand
+    // another project's (or an arbitrary) file to the delete cascade. The
+    // cascade confines again, so relative paths are checked there.
+    if (absolute && !confineWikiFilePath(projectPath, fullPath)) continue
     try {
       await cascadeDeleteWikiPage(projectPath, fullPath)
     } catch {
@@ -305,6 +396,9 @@ export async function enqueueIngest(
   }
 
   const id = upsertQueuedIngestTask(projectId, sourcePath, folderContext)
+  if (!id) {
+    throw new Error(`enqueueIngest: source path must stay inside the project: ${sourcePath}`)
+  }
   await saveQueue(currentProjectPath)
 
   processNext(currentProjectId)
@@ -328,11 +422,13 @@ export async function enqueueBatch(
 
   const ids: string[] = []
   for (const file of files) {
-    ids.push(upsertQueuedIngestTask(projectId, file.sourcePath, file.folderContext))
+    const id = upsertQueuedIngestTask(projectId, file.sourcePath, file.folderContext)
+    if (id) ids.push(id)
   }
 
+  if (ids.length === 0) return ids
   await saveQueue(currentProjectPath)
-  console.log(`[Ingest Queue] Enqueued ${files.length} files`)
+  console.log(`[Ingest Queue] Enqueued ${ids.length} files`)
   processNext(currentProjectId)
 
   return ids
@@ -363,10 +459,8 @@ export async function enqueueInactiveProjectBatch(
     const persisted = await loadQueue(pp, projectId)
     if (currentProjectId === projectId) return
     for (const file of files) {
-      const normalizedSourcePath = normalizePath(file.sourcePath)
-      const sourcePath = normalizedSourcePath.startsWith(`${pp}/`)
-        ? normalizedSourcePath.slice(pp.length + 1)
-        : normalizedSourcePath
+      const sourcePath = confineLiveIngestSourcePath(file.sourcePath, pp)
+      if (!sourcePath) continue
       const existing = persisted.find((task) =>
         task.projectId === projectId &&
         task.status !== "done" &&
@@ -695,7 +789,10 @@ export async function discardTasksForSources(
   const targetIds = new Set(targets.map((task) => task.id))
   const hadProcessingTask = targets.some((task) => task.status === "processing")
   for (const task of targets) {
-    if (task.status === "processing") cancelledInFlightTaskIds.add(task.id)
+    if (task.status === "processing") {
+      cancelledInFlightTaskIds.add(task.id)
+      discardedInFlightTaskIds.add(task.id)
+    }
   }
   for (const task of targets) {
     const run = activeRuns.get(task.id)
@@ -858,6 +955,7 @@ export function clearQueueState(): void {
   }
   queue = []
   cancelledInFlightTaskIds.clear()
+  discardedInFlightTaskIds.clear()
   activeRuns.clear()
   scheduling = false
   paused = false
@@ -935,6 +1033,8 @@ export async function pauseQueue(): Promise<void> {
   queue = []
   cancelledInFlightTaskIds.clear()
   blockedOnLlmConfig = false
+  // Keep discardedInFlightTaskIds until the old run observes them so a
+  // late autoIngest completion can still undo writes on the old path.
   currentProjectId = ""
   currentProjectPath = ""
   processedSinceDrain = false
@@ -948,6 +1048,9 @@ export async function pauseQueue(): Promise<void> {
  * Load queue from disk. Called on app startup and when opening / switching
  * to a project. Restored pending tasks resume automatically; otherwise a
  * process restart can leave durable work stalled with no visible failure.
+ * The third argument is the former local `autoResume` opt-in (App.tsx passes
+ * `true`); it is accepted for call-site compatibility only, because automatic
+ * resume is now the unconditional behavior.
  * `pauseQueue()` must have been called first (or the active project already
  * cleared) so that in-memory state is not contaminated from the previous
  * project.
@@ -955,6 +1058,7 @@ export async function pauseQueue(): Promise<void> {
 export async function restoreQueue(
   projectId: string,
   projectPath: string,
+  _autoResume = true,
 ): Promise<void> {
   queueEpoch += 1
   const pp = normalizePath(projectPath)
@@ -991,16 +1095,29 @@ export async function restoreQueue(
     )
   }
 
-  // Reset any "processing" tasks back to "pending" (interrupted by app close)
+  const confined: IngestTask[] = []
+  let droppedUnsafe = 0
   let restored = 0
   for (const task of mine) {
+    const sourcePath = confineRestoredSourcePath(task.sourcePath, pp)
+    if (!sourcePath) {
+      droppedUnsafe++
+      continue
+    }
+    // Reset any "processing" tasks back to "pending" (interrupted by app close)
     if (task.status === "processing") {
       task.status = "pending"
       restored++
     }
+    confined.push({ ...task, sourcePath })
+  }
+  if (droppedUnsafe > 0) {
+    console.warn(
+      `[Ingest Queue] Dropped ${droppedUnsafe} restored tasks whose sourcePath left raw/sources`,
+    )
   }
 
-  queue = mine
+  queue = confined
   await saveQueue(pp)
 
   const pending = queue.filter((t) => t.status === "pending").length
@@ -1083,9 +1200,15 @@ async function runTask(
   run: ActiveIngestRun,
   runCommit: ReturnType<IngestCommitCoordinator["reserve"]>["runCommit"],
 ): Promise<void> {
-  const fullSourcePath = isAbsolutePath(task.sourcePath)
-    ? normalizePath(task.sourcePath)
-    : `${projectPath}/${task.sourcePath}`
+  const confinedSourcePath = confineLiveIngestSourcePath(task.sourcePath, projectPath)
+  if (!confinedSourcePath) {
+    task.status = "failed"
+    task.error = "Ingest source path must stay inside the project"
+    await saveQueue(projectPath)
+    return
+  }
+  task.sourcePath = confinedSourcePath
+  const fullSourcePath = `${projectPath}/${confinedSourcePath}`
   const trackWrittenFile = (relativePath: string): void => {
     if (!run.writtenFiles.includes(relativePath)) run.writtenFiles.push(relativePath)
   }
@@ -1100,8 +1223,13 @@ async function runTask(
       trackWrittenFile,
       { runCommit },
     )
-    if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
     run.writtenFiles = writtenFiles
+    if (discardedInFlightTaskIds.delete(task.id)) {
+      cancelledInFlightTaskIds.delete(task.id)
+      await undoDiscardedSourceIngest(projectPath, fullSourcePath, writtenFiles)
+      return
+    }
+    if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
 
     const currentTask = queue.find((candidate) => candidate.id === task.id)
     if (cancelledInFlightTaskIds.delete(task.id) || currentTask?.status === "cancelled") {
@@ -1120,6 +1248,11 @@ async function runTask(
     await saveQueue(projectPath)
     console.log(`[Ingest Queue] Done: ${task.sourcePath}`)
   } catch (err) {
+    if (discardedInFlightTaskIds.delete(task.id)) {
+      cancelledInFlightTaskIds.delete(task.id)
+      await undoDiscardedSourceIngest(projectPath, fullSourcePath, run.writtenFiles)
+      return
+    }
     if (currentProjectId !== projectId || run.epoch !== queueEpoch) return
     const currentTask = queue.find((candidate) => candidate.id === task.id)
     if (cancelledInFlightTaskIds.delete(task.id) || currentTask?.status === "cancelled") {
@@ -1191,6 +1324,15 @@ async function startTask(projectId: string, task: IngestTask): Promise<boolean> 
     await saveQueue(currentProjectPath)
     return true
   }
+
+  const confinedSourcePath = confineLiveIngestSourcePath(task.sourcePath, projectPath)
+  if (!confinedSourcePath) {
+    task.status = "failed"
+    task.error = "Ingest source path must stay inside the project"
+    await saveQueue(projectPath)
+    return true
+  }
+  task.sourcePath = confinedSourcePath
 
   const llmConfig = getTaskLlmConfig("ingest")
   if (!hasUsableLlm(llmConfig)) {

@@ -1,6 +1,6 @@
-import { writeFile, readFile, createDirectory, listDirectory } from "@/commands/fs"
+import { writeFile, readFile, createDirectory, listDirectory, deleteFile, fileExists } from "@/commands/fs"
 import { normalizeReviewItems, type ReviewItem } from "@/stores/review-store"
-import type { LintItem } from "@/stores/lint-store"
+import { normalizeLintItems, type LintItem } from "@/stores/lint-store"
 import type { DisplayMessage, Conversation } from "@/stores/chat-store"
 import type { ChatAgentMode, ChatRetrievalMode } from "@/lib/chat-agent-types"
 import { normalizePath } from "@/lib/path-utils"
@@ -37,7 +37,7 @@ export async function loadLintItems(projectPath: string): Promise<LintItem[]> {
   const pp = normalizePath(projectPath)
   try {
     const content = await readFile(`${pp}/.llm-wiki/lint.json`)
-    return JSON.parse(content) as LintItem[]
+    return normalizeLintItems(JSON.parse(content))
   } catch {
     return []
   }
@@ -55,6 +55,72 @@ export interface ChatPreferences {
   retrievalMode: ChatRetrievalMode
   selectedSkills: string[]
   disabledSkills: string[]
+}
+
+/** Generated chat IDs are `conv_<timestamp>_<rand>`; tests also use short slugs. */
+const CONVERSATION_ID_MAX_LENGTH = 128
+const SAFE_CONVERSATION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
+const WINDOWS_RESERVED_CONVERSATION_ID = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i
+
+/**
+ * Conversation ids are used as a single filename under `.llm-wiki/chats/`.
+ * Reject anything that is not a single safe path segment so a tampered
+ * `conversations.json` or message payload cannot traverse out of that directory.
+ */
+export function isSafeConversationId(id: unknown): id is string {
+  if (typeof id !== "string" || id.length === 0 || id.length > CONVERSATION_ID_MAX_LENGTH) {
+    return false
+  }
+  if (/[\x00-\x1f]/.test(id)) return false
+  if (!SAFE_CONVERSATION_ID.test(id)) return false
+  if (WINDOWS_RESERVED_CONVERSATION_ID.test(id)) return false
+  return true
+}
+
+/** Case-insensitive filesystems treat `c1.json` and `C1.json` as one file. */
+export function canonicalizeConversationId(id: string): string {
+  return id.toLowerCase()
+}
+
+/** Generated and persisted ids are already lowercase; mixed-case variants are not aliases. */
+export function isCanonicalConversationId(id: unknown): id is string {
+  return isSafeConversationId(id) && id === canonicalizeConversationId(id)
+}
+
+export function conversationChatFilePath(
+  projectPath: string,
+  conversationId: string,
+): string | null {
+  if (!isSafeConversationId(conversationId)) return null
+  return `${normalizePath(projectPath)}/.llm-wiki/chats/${canonicalizeConversationId(conversationId)}.json`
+}
+
+function uniqueCanonicalConversations(conversations: Conversation[]): Conversation[] {
+  const seen = new Set<string>()
+  const out: Conversation[] = []
+  for (const conversation of conversations) {
+    if (!conversation || !isCanonicalConversationId(conversation.id)) continue
+    if (seen.has(conversation.id)) continue
+    seen.add(conversation.id)
+    out.push(conversation)
+  }
+  return out
+}
+
+function sanitizePersistedChatData(data: Partial<PersistedChatData> | null | undefined): PersistedChatData {
+  const conversations = uniqueCanonicalConversations(
+    Array.isArray(data?.conversations) ? data.conversations : [],
+  )
+  const keptIds = new Set(conversations.map((conversation) => conversation.id))
+  const messages = Array.isArray(data?.messages)
+    ? data.messages.filter(
+        (message) =>
+          Boolean(message)
+          && isCanonicalConversationId(message.conversationId)
+          && keptIds.has(message.conversationId),
+      )
+    : []
+  return { conversations, messages }
 }
 
 function stripPersistedMessageImages(msg: DisplayMessage): DisplayMessage {
@@ -84,30 +150,94 @@ export async function saveChatHistory(
   const pp = normalizePath(projectPath)
   await ensureDir(pp)
 
-  // Save conversation list
-  await writeFile(
-    `${pp}/.llm-wiki/conversations.json`,
-    JSON.stringify(conversations, null, 2)
-  )
+  const safeConversations = uniqueCanonicalConversations(conversations)
+  const keptIds = new Set(safeConversations.map((conversation) => conversation.id))
 
   // Save each conversation's messages separately
   const byConversation = new Map<string, DisplayMessage[]>()
   for (const msg of messages) {
-    const list = byConversation.get(msg.conversationId) ?? []
+    if (!isCanonicalConversationId(msg.conversationId)) continue
+    const conversationId = msg.conversationId
+    if (!keptIds.has(conversationId)) continue
+    const list = byConversation.get(conversationId) ?? []
     // Images can be multi-megabyte base64 payloads. Keep them in memory for the
     // current chat turn, but don't persist them into chat JSON where they would
     // quickly bloat auto-save files and project backups.
-    list.push(stripPersistedMessageImages(msg))
-    byConversation.set(msg.conversationId, list)
+    list.push({ ...stripPersistedMessageImages(msg), conversationId })
+    byConversation.set(conversationId, list)
   }
 
   for (const [convId, msgs] of byConversation) {
+    const chatPath = conversationChatFilePath(pp, convId)
+    if (!chatPath) continue
     // Keep last 100 messages per conversation
     const toSave = msgs.slice(-100)
-    await writeFile(
-      `${pp}/.llm-wiki/chats/${convId}.json`,
-      JSON.stringify(toSave, null, 2)
-    )
+    await writeFile(chatPath, JSON.stringify(toSave, null, 2))
+  }
+
+  // Drop files for conversations no longer in the index *before* rewriting
+  // conversations.json. Otherwise an in-memory delete plus a failed file
+  // unlink leaves an orphan that loadChatHistory will resurrect.
+  await pruneRemovedChatFiles(pp, keptIds)
+
+  await writeFile(
+    `${pp}/.llm-wiki/conversations.json`,
+    JSON.stringify(safeConversations, null, 2)
+  )
+}
+
+/**
+ * Delete the on-disk chat file for a conversation. Missing files are
+ * already gone. Callers must not drop the in-memory conversation until
+ * this resolves — a swallowed failure plus auto-save would empty the
+ * index while orphan recovery brings the chat back.
+ */
+export async function deletePersistedConversation(
+  projectPath: string,
+  conversationId: string,
+): Promise<void> {
+  const chatPath = conversationChatFilePath(projectPath, conversationId)
+  if (!chatPath) return
+  if (!(await fileExists(chatPath))) return
+  await deleteFile(chatPath)
+}
+
+/** Remove a conversation from disk first, then from memory. */
+export async function discardConversation(
+  projectPath: string | undefined | null,
+  conversationId: string,
+  removeFromStore: (id: string) => void,
+): Promise<void> {
+  if (projectPath) {
+    await deletePersistedConversation(projectPath, conversationId)
+  }
+  removeFromStore(conversationId)
+}
+
+async function pruneRemovedChatFiles(
+  projectPath: string,
+  keptIds: Set<string>,
+): Promise<void> {
+  let files: FileNode[]
+  try {
+    files = flattenFiles(await listDirectory(`${projectPath}/.llm-wiki/chats`))
+  } catch {
+    return
+  }
+
+  const canonicalKept = new Set(
+    [...keptIds]
+      .filter((id) => isSafeConversationId(id))
+      .map((id) => canonicalizeConversationId(id)),
+  )
+  for (const file of files) {
+    if (file.is_dir || !file.name.toLowerCase().endsWith(".json")) continue
+    const id = file.name.replace(/\.json$/i, "")
+    if (!isSafeConversationId(id)) continue
+    if (canonicalKept.has(canonicalizeConversationId(id))) continue
+    const chatPath = conversationChatFilePath(projectPath, id)
+    if (!chatPath) continue
+    await deleteFile(chatPath)
   }
 }
 
@@ -116,17 +246,16 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
   try {
     // Try new format: separate files per conversation
     const convContent = await readFile(`${pp}/.llm-wiki/conversations.json`)
-    const conversations = JSON.parse(convContent) as Conversation[]
+    const parsedConversations = JSON.parse(convContent) as Conversation[]
+    const conversations = uniqueCanonicalConversations(
+      Array.isArray(parsedConversations) ? parsedConversations : [],
+    )
 
     const allMessages: DisplayMessage[] = []
     for (const conv of conversations) {
-      try {
-        const msgContent = await readFile(`${pp}/.llm-wiki/chats/${conv.id}.json`)
-        const msgs = JSON.parse(msgContent) as DisplayMessage[]
-        allMessages.push(...msgs)
-      } catch {
-        // Conversation file missing, skip
-      }
+      const msgs = await readConversationMessages(pp, conv.id)
+      if (!msgs) continue
+      allMessages.push(...msgs)
     }
 
     if (conversations.length > 0 || allMessages.length > 0) {
@@ -165,12 +294,32 @@ export async function loadChatHistory(projectPath: string): Promise<PersistedCha
         return { conversations: [defaultConv], messages: migratedMessages }
       }
 
-      // Old combined format
-      const data = parsed as PersistedChatData
-      return data
+      // Old combined format. Same id allowlist as save/load of the
+      // split files: a poisoned chat-history.json must not inject
+      // traversal or case-variant conversation ids into the store.
+      return sanitizePersistedChatData(parsed as PersistedChatData)
     } catch {
       return { conversations: [], messages: [] }
     }
+  }
+}
+
+async function readConversationMessages(
+  projectPath: string,
+  conversationId: string,
+): Promise<DisplayMessage[] | null> {
+  const chatPath = conversationChatFilePath(projectPath, conversationId)
+  if (!chatPath) return null
+  try {
+    const msgContent = await readFile(chatPath)
+    const msgs = JSON.parse(msgContent) as DisplayMessage[]
+    if (!Array.isArray(msgs)) return null
+    return msgs.map((message) => ({
+      ...message,
+      conversationId: canonicalizeConversationId(conversationId),
+    }))
+  } catch {
+    return null
   }
 }
 
@@ -204,26 +353,33 @@ function conversationFromMessages(id: string, messages: DisplayMessage[]): Conve
 
 async function recoverChatHistoryFromOrphanChatFiles(projectPath: string): Promise<PersistedChatData> {
   try {
-    const chatDir = `${projectPath}/.llm-wiki/chats`
-    const files = flattenFiles(await listDirectory(chatDir))
-      .filter((node) => node.name.endsWith(".json"))
+    const chatDir = `${normalizePath(projectPath)}/.llm-wiki/chats`
+    // Direct children only. Nested leftovers (and directory symlinks under
+    // chats/) must not rebuild a conversation the user already deleted.
+    const files = (await listDirectory(chatDir))
+      .filter((node) => !node.is_dir && node.name.toLowerCase().endsWith(".json"))
       .sort((a, b) => a.name.localeCompare(b.name))
     const conversations: Conversation[] = []
     const allMessages: DisplayMessage[] = []
+    const seen = new Set<string>()
 
     for (const file of files) {
       try {
-        const raw = await readFile(file.path)
+        const rawId = file.name.replace(/\.json$/i, "")
+        if (!isSafeConversationId(rawId)) continue
+        const id = canonicalizeConversationId(rawId)
+        if (seen.has(id)) continue
+        const chatPath = conversationChatFilePath(projectPath, id)
+        if (!chatPath) continue
+        seen.add(id)
+        const raw = await readFile(chatPath)
         const parsed = JSON.parse(raw)
         if (!Array.isArray(parsed)) continue
-        const id = file.name.replace(/\.json$/i, "")
         const messages = (parsed as DisplayMessage[])
           .filter((message) => message && typeof message === "object")
           .map((message) => ({
             ...message,
-            conversationId: typeof message.conversationId === "string" && message.conversationId
-              ? message.conversationId
-              : id,
+            conversationId: id,
           }))
         const conversation = conversationFromMessages(id, messages)
         if (!conversation) continue

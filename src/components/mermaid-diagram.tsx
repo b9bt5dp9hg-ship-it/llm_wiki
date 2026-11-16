@@ -1,6 +1,7 @@
 import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from "react"
 import { AlertTriangle, X, ZoomIn } from "lucide-react"
 import { useTranslation } from "react-i18next"
+import { trapTabInContainer } from "@/components/search/search-a11y"
 
 interface MermaidDiagramProps {
   code: string
@@ -11,6 +12,7 @@ const svgCache = new Map<string, string>()
 export function MermaidDiagram({ code }: MermaidDiagramProps) {
   const { t } = useTranslation()
   const containerRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [svg, setSvg] = useState<string | null>(() => svgCache.get(code) ?? null)
   const [visible, setVisible] = useState(() => svgCache.has(code))
@@ -101,17 +103,17 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
   // Prevent layout shift: compute a stable min-height from code line count
   const estimatedHeight = Math.max(80, code.split("\n").length * 20)
 
-  // Close overlay on Escape
+  // Move focus into the modal and return it to the invoking control on close.
   useEffect(() => {
     if (!expanded) return
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setExpanded(false)
-        setScale(1)
-      }
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const frame = requestAnimationFrame(() => {
+      dialogRef.current?.querySelector<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")?.focus()
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+      previousFocus?.focus()
     }
-    window.addEventListener("keydown", handleKey)
-    return () => window.removeEventListener("keydown", handleKey)
   }, [expanded])
 
   if (error) {
@@ -149,14 +151,24 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
             <button
               type="button"
               onClick={() => setExpanded(true)}
-              className="absolute top-2 right-2 z-10 rounded-md bg-background/80 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/diagram:opacity-100"
+              aria-label={t("mermaid.enlarge")}
+              className="absolute top-2 right-2 z-10 rounded-md bg-background/80 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/diagram:opacity-100 group-focus-within/diagram:opacity-100 focus-visible:opacity-100"
               title={t("mermaid.enlarge")}
             >
               <ZoomIn className="h-4 w-4" />
             </button>
             <div
+              role="button"
+              tabIndex={0}
+              aria-label={t("mermaid.enlarge")}
               className="cursor-zoom-in p-3"
               onClick={() => setExpanded(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  setExpanded(true)
+                }
+              }}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </>
@@ -178,12 +190,26 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
           onClick={() => { setExpanded(false); setScale(1) }}
         >
           <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={t("mermaid.diagram")}
             className="relative h-[90vh] w-[90vw] overflow-auto rounded-lg bg-background border border-border shadow-2xl p-6"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault()
+                setExpanded(false)
+                setScale(1)
+                return
+              }
+              trapTabInContainer(event.nativeEvent, event.currentTarget)
+            }}
           >
             <div className="absolute top-3 right-3 z-10 flex items-center gap-1">
               <button
                 type="button"
+                aria-label={t("settings.sections.interface.zoomIn")}
                 onClick={() => setScale((s) => Math.min(s + 0.3, 5))}
                 className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >
@@ -192,6 +218,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               <span className="text-xs text-muted-foreground tabular-nums min-w-[3rem] text-center">{Math.round(scale * 100)}%</span>
               <button
                 type="button"
+                aria-label={t("settings.sections.interface.zoomOut")}
                 onClick={() => setScale((s) => Math.max(s - 0.3, 0.3))}
                 className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >
@@ -199,6 +226,7 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
               </button>
               <button
                 type="button"
+                aria-label={t("common.close")}
                 onClick={() => { setExpanded(false); setScale(1) }}
                 className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
               >

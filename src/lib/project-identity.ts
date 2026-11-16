@@ -16,6 +16,7 @@
 import { load } from "@tauri-apps/plugin-store"
 import { readFile, writeFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
+import { withProjectLock } from "@/lib/project-mutex"
 
 const STORE_NAME = "app-state.json"
 const REGISTRY_KEY = "projectRegistry"
@@ -44,27 +45,130 @@ function identityPath(projectPath: string): string {
  * Return the project's stable UUID. Generates + writes one on first call
  * for a project that doesn't have `.llm-wiki/project.json` yet.
  */
-export async function ensureProjectId(projectPath: string): Promise<string> {
-  const path = identityPath(projectPath)
+async function readExistingProjectId(projectPath: string): Promise<string | null> {
   try {
-    const raw = await readFile(path)
+    const raw = await readFile(identityPath(projectPath))
     const parsed = JSON.parse(raw) as ProjectIdentity
     if (parsed?.id && typeof parsed.id === "string") {
       return parsed.id
     }
   } catch {
-    // missing or corrupt — fall through to create
+    // missing or corrupt
   }
-  const identity: ProjectIdentity = {
+  return null
+}
+
+export async function ensureProjectId(projectPath: string): Promise<string> {
+  const pp = normalizePath(projectPath)
+  return withProjectLock(`${pp}\0project-identity`, async () => {
+    const existing = await readExistingProjectId(pp)
+    if (existing) return existing
+    const identity = newProjectIdentity()
+    try {
+      await writeFile(identityPath(pp), JSON.stringify(identity, null, 2))
+    } catch (err) {
+      console.warn("[project-identity] failed to write identity file:", err)
+    }
+    return identity.id
+  })
+}
+
+function newProjectIdentity(): ProjectIdentity {
+  return {
     id: crypto.randomUUID(),
     createdAt: Date.now(),
   }
-  try {
-    await writeFile(path, JSON.stringify(identity, null, 2))
-  } catch (err) {
-    console.warn("[project-identity] failed to write identity file:", err)
-  }
+}
+
+/**
+ * Mint a fresh on-disk identity for an imported project copy.
+ * Archive import must not reuse the source project's stable UUID, or
+ * queue tasks and the global registry would collide with the original.
+ */
+export async function reissueImportedProjectIdentity(projectPath: string): Promise<string> {
+  const identity = newProjectIdentity()
+  const pp = normalizePath(projectPath)
+  await writeFile(identityPath(pp), JSON.stringify(identity, null, 2))
+  await remapImportedProjectBoundQueues(pp, identity.id)
   return identity.id
+}
+
+/**
+ * After backend archive import, the destination already has a freshly minted
+ * identity. Remap cloned queue files onto that id without issuing a second UUID.
+ * Mint once only when the identity file is missing or unreadable.
+ */
+export async function adoptImportedProjectIdentity(projectPath: string): Promise<string> {
+  const pp = normalizePath(projectPath)
+  const existing = await readExistingProjectId(pp)
+  if (!existing) {
+    return reissueImportedProjectIdentity(pp)
+  }
+  await remapImportedProjectBoundQueues(pp, existing)
+  return existing
+}
+
+const IMPORTED_TASK_ARRAY_QUEUES = ["ingest-queue.json", "dedup-queue.json"] as const
+
+/**
+ * Archive copies still contain the source project's UUID inside per-project
+ * queue files. Restore/watch filters drop those tasks, and the cloned id
+ * would otherwise keep pointing at the original registry entry.
+ */
+async function remapImportedProjectBoundQueues(
+  projectPath: string,
+  projectId: string,
+): Promise<void> {
+  const wiki = `${projectPath}/.llm-wiki`
+  for (const name of IMPORTED_TASK_ARRAY_QUEUES) {
+    await remapProjectIdInTaskArray(`${wiki}/${name}`, projectId)
+  }
+  await remapProjectIdInFileChangeQueue(`${wiki}/file-change-queue.json`, projectId)
+}
+
+async function remapProjectIdInTaskArray(path: string, projectId: string): Promise<void> {
+  const parsed = await readOptionalJson(path)
+  if (parsed === undefined) return
+  if (!Array.isArray(parsed)) {
+    await writeFile(path, "[]")
+    return
+  }
+  await writeFile(path, JSON.stringify(parsed.map((task) => withProjectId(task, projectId)), null, 2))
+}
+
+async function remapProjectIdInFileChangeQueue(path: string, projectId: string): Promise<void> {
+  const parsed = await readOptionalJson(path)
+  if (parsed === undefined) return
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    await writeFile(path, JSON.stringify({ version: 1, tasks: [] }, null, 2))
+    return
+  }
+  const record = parsed as { tasks?: unknown }
+  const tasks = Array.isArray(record.tasks)
+    ? record.tasks.map((task) => withProjectId(task, projectId))
+    : []
+  await writeFile(path, JSON.stringify({ ...record, tasks }, null, 2))
+}
+
+function withProjectId(value: unknown, projectId: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const { project_id: _legacy, ...rest } = value as Record<string, unknown>
+  return { ...rest, projectId }
+}
+
+/** `undefined` if the file is missing; `null` if it is not valid JSON. */
+async function readOptionalJson(path: string): Promise<unknown | undefined> {
+  let raw: string
+  try {
+    raw = await readFile(path)
+  } catch {
+    return undefined
+  }
+  try {
+    return JSON.parse(raw) as unknown
+  } catch {
+    return null
+  }
 }
 
 // ── Global registry (Tauri plugin-store) ──────────────────────────────────
@@ -88,23 +192,30 @@ async function saveRegistry(registry: ProjectRegistry): Promise<void> {
   await store.set(REGISTRY_KEY, registry)
 }
 
+const REGISTRY_LOCK = "\0project-registry"
+
 /**
  * Create or update the registry entry for this project. Call on open /
  * create / switch so the path always reflects the latest known location.
+ *
+ * Registry updates are read-modify-write. Serialize them so concurrent
+ * open/create of two projects cannot drop the other project's entry.
  */
 export async function upsertProjectInfo(
   id: string,
   path: string,
   name: string,
 ): Promise<void> {
-  const registry = await loadRegistry()
-  registry[id] = {
-    id,
-    path: normalizePath(path),
-    name,
-    lastOpened: Date.now(),
-  }
-  await saveRegistry(registry)
+  await withProjectLock(REGISTRY_LOCK, async () => {
+    const registry = await loadRegistry()
+    registry[id] = {
+      id,
+      path: normalizePath(path),
+      name,
+      lastOpened: Date.now(),
+    }
+    await saveRegistry(registry)
+  })
 }
 
 /**

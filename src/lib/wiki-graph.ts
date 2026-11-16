@@ -4,6 +4,13 @@ import { buildRetrievalGraph, calculateRelevance } from "./graph-relevance"
 import { normalizePath } from "@/lib/path-utils"
 import { parseFrontmatter } from "@/lib/frontmatter"
 import { detectCommunities } from "./wiki-graph-analysis"
+import {
+  buildWikiLinkIndex,
+  resolveWikiLink,
+  type WikiLinkIndex,
+  type WikiLinkTarget,
+} from "./wiki-link-resolver"
+import yaml from "js-yaml"
 
 export interface GraphNode {
   id: string
@@ -111,39 +118,46 @@ function extractWikilinks(content: string): string[] {
   return links
 }
 
+/**
+ * Frontmatter `related:` entries. The display parser stringifies unusual YAML
+ * values; graph relationships must only come from actual strings, never a
+ * boolean/object coerced to a page name. Reuse its located block while
+ * preserving YAML value types (JSON schema keeps `123`/`true` non-strings).
+ */
 function extractRelated(content: string): string[] {
-  const related = parseFrontmatter(content).frontmatter?.related
-  if (!Array.isArray(related)) return []
-  return related
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim().replace(/^\[\[|\]\]$/g, ""))
-    .map((value) => value.split("|")[0].split("#")[0].replace(/\\/g, "/"))
-    .map((value) => value.split("/").pop()?.replace(/\.md$/i, "") ?? "")
-    .filter(Boolean)
-}
-
-function fileNameToId(fileName: string): string {
-  return fileName.replace(/\.md$/, "")
-}
-
-function targetAliases(value: string): string[] {
-  const lower = value.toLowerCase()
-  return [value, lower, lower.replace(/\s+/g, "-")]
-}
-
-function buildTargetIndex(nodeIds: Iterable<string>): Map<string, string> {
-  const ids = Array.from(nodeIds)
-  const index = new Map<string, string>()
-  // Exact IDs must win over case-folded aliases. On a case-sensitive
-  // filesystem, Foo.md and foo.md are distinct pages and [[foo]] must retain
-  // the reader's exact-match behavior.
-  for (const id of ids) index.set(id, id)
-  for (const id of ids) {
-    for (const alias of targetAliases(id).slice(1)) {
-      if (!index.has(alias)) index.set(alias, id)
+  const rawBlock = parseFrontmatter(content).rawBlock
+  const payload = rawBlock.match(/(?:^\uFEFF?|\n)---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:[ \t]*\r?\n|[ \t]*$)/)?.[1]
+  if (payload === undefined) return []
+  try {
+    const metadata = yaml.load(payload, { schema: yaml.JSON_SCHEMA })
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return []
+    const related = (metadata as Record<string, unknown>).related
+    if (Array.isArray(related)) {
+      return related.filter((value): value is string => typeof value === "string")
     }
+    if (typeof related === "string" && related.trim()) return [related]
+  } catch {
+    // Malformed metadata does not suppress independently valid wikilinks.
   }
-  return index
+  return []
+}
+
+/**
+ * Resolve a `related:` entry. Explicit paths resolve as paths first (same
+ * rules as body wikilinks and the reader). Generated metadata often names a
+ * stale folder (`wiki/concepts/x.md` for a page that lives elsewhere), so a
+ * related path that does not resolve falls back to its basename — which still
+ * only links when that basename is unambiguous in the wiki.
+ */
+function resolveRelatedTarget(index: WikiLinkIndex, reference: string): WikiLinkTarget | null {
+  const exact = resolveWikiLink(index, reference)
+  if (exact) return exact
+  const target = reference.trim().replace(/^\[\[|\]\]$/g, "").split("|", 1)[0].split("#", 1)[0].replace(/\\/g, "/")
+  if (!target.includes("/") || target.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(target)) return null
+  const segments = target.split("/")
+  if (segments.some((segment) => segment === "..")) return null
+  const basename = segments.pop()?.trim()
+  return basename ? resolveWikiLink(index, basename) : null
 }
 
 async function mapWithConcurrency<T, R>(
@@ -221,7 +235,7 @@ async function buildWikiGraphUncached(projectPath: string): Promise<WikiGraphRes
   // Build a map of id -> node data
   const nodeMap = new Map<
     string,
-    { id: string; label: string; type: string; path: string; links: string[] }
+    { id: string; label: string; type: string; path: string; links: string[]; related: string[] }
   >()
 
   const parsedFiles = await mapWithConcurrency(
@@ -230,31 +244,32 @@ async function buildWikiGraphUncached(projectPath: string): Promise<WikiGraphRes
     async (file) => {
       try {
         const content = await readFile(file.path)
-        const id = fileNameToId(file.name)
         return {
-          id,
           label: extractTitle(content, file.name),
           type: extractType(content),
           path: file.path,
-          links: Array.from(new Set([...extractWikilinks(content), ...extractRelated(content)])),
+          links: Array.from(new Set(extractWikilinks(content))),
+          related: Array.from(new Set(extractRelated(content))),
         }
       } catch {
         return null
       }
     },
   )
-  for (const parsed of parsedFiles) {
-    if (parsed) nodeMap.set(parsed.id, parsed)
-  }
-
   // Filter out query nodes (research results, saved chat answers) — they are
   // intermediate artifacts, not knowledge structure. The entities/concepts
   // extracted from them via auto-ingest are what belong in the graph.
-  const HIDDEN_TYPES = new Set(["query"])
-  for (const [id, node] of nodeMap) {
-    if (HIDDEN_TYPES.has(node.type)) {
-      nodeMap.delete(id)
-    }
+  const visibleFiles = parsedFiles.filter(
+    (file): file is NonNullable<typeof file> => file !== null && file.type !== "query",
+  )
+  // The reader sees every filename, including queries and unreadable pages.
+  // Keep that complete inventory for identity/ambiguity; visibility only
+  // controls which resolved pages can become nodes or edge endpoints.
+  const targetIndex = buildWikiLinkIndex(mdFiles.map((file) => file.path), wikiRoot)
+  const idsByPath = new Map(targetIndex.targets.map((target) => [target.path, target.id]))
+  for (const parsed of visibleFiles) {
+    const id = idsByPath.get(parsed.path)
+    if (id !== undefined) nodeMap.set(id, { ...parsed, id })
   }
 
   // Count link references
@@ -264,19 +279,17 @@ async function buildWikiGraphUncached(projectPath: string): Promise<WikiGraphRes
   }
 
   const rawEdges: GraphEdge[] = []
-  const targetIndex = buildTargetIndex(nodeMap.keys())
 
   for (const [sourceId, nodeData] of nodeMap) {
-    for (const targetRaw of nodeData.links) {
-      // Normalize target: try matching by id (case-insensitive, hyphen/space)
-      const targetId = resolveTarget(targetRaw, targetIndex)
-      if (targetId === null) continue
+    const targetIds = [
+      ...nodeData.links.map((targetRaw) => resolveWikiLink(targetIndex, targetRaw)?.id),
+      ...nodeData.related.map((targetRaw) => resolveRelatedTarget(targetIndex, targetRaw)?.id),
+    ]
+    for (const targetId of targetIds) {
+      if (targetId === undefined || !nodeMap.has(targetId)) continue
       if (targetId === sourceId) continue
 
       rawEdges.push({ source: sourceId, target: targetId, weight: 1 })
-
-      linkCounts.set(sourceId, (linkCounts.get(sourceId) ?? 0) + 1)
-      linkCounts.set(targetId, (linkCounts.get(targetId) ?? 0) + 1)
     }
   }
 
@@ -284,11 +297,13 @@ async function buildWikiGraphUncached(projectPath: string): Promise<WikiGraphRes
   const seenEdges = new Set<string>()
   const dedupedEdges: { source: string; target: string }[] = []
   for (const edge of rawEdges) {
-    const key = `${edge.source}:::${edge.target}`
-    const reverseKey = `${edge.target}:::${edge.source}`
+    const key = JSON.stringify([edge.source, edge.target])
+    const reverseKey = JSON.stringify([edge.target, edge.source])
     if (!seenEdges.has(key) && !seenEdges.has(reverseKey)) {
       seenEdges.add(key)
       dedupedEdges.push(edge)
+      linkCounts.set(edge.source, (linkCounts.get(edge.source) ?? 0) + 1)
+      linkCounts.set(edge.target, (linkCounts.get(edge.target) ?? 0) + 1)
     }
   }
 
@@ -335,15 +350,4 @@ async function buildWikiGraphUncached(projectPath: string): Promise<WikiGraphRes
   }))
 
   return { nodes, edges, communities }
-}
-
-function resolveTarget(
-  raw: string,
-  targetIndex: ReadonlyMap<string, string>,
-): string | null {
-  for (const alias of targetAliases(raw)) {
-    const target = targetIndex.get(alias)
-    if (target) return target
-  }
-  return null
 }

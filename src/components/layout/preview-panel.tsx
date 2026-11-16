@@ -2,17 +2,18 @@ import { useEffect, useCallback, useRef } from "react"
 import { ArrowLeft, ArrowRight, X } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import { useWikiStore } from "@/stores/wiki-store"
-import { readFile, writeFile } from "@/commands/fs"
 import { getFileCategory, isBinary, isExtractedTextPreviewFile } from "@/lib/file-types"
 import { WikiEditor } from "@/components/editor/wiki-editor"
 import { FilePreview } from "@/components/editor/file-preview"
 import { getFileName } from "@/lib/path-utils"
+import { createPreviewFileSession, type PreviewFileWriteOutcome } from "@/lib/preview-file-session"
 
 export function PreviewPanel() {
   const { t } = useTranslation()
   const selectedFile = useWikiStore((s) => s.selectedFile)
   const fileContent = useWikiStore((s) => s.fileContent)
   const previewContentPath = useWikiStore((s) => s.previewContentPath)
+  const previewContentNonce = useWikiStore((s) => s.previewContentNonce)
   const externalPreview = useWikiStore((s) => s.externalPreview)
   const setFileContent = useWikiStore((s) => s.setFileContent)
   const closePreview = useWikiStore((s) => s.closePreview)
@@ -20,7 +21,7 @@ export function PreviewPanel() {
   const previewForwardStack = useWikiStore((s) => s.previewForwardStack)
   const navigatePreviewBack = useWikiStore((s) => s.navigatePreviewBack)
   const navigatePreviewForward = useWikiStore((s) => s.navigatePreviewForward)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadSessionRef = useRef(createPreviewFileSession())
   // Snapshot of what was most recently loaded from disk. Milkdown re-emits
   // `markdownUpdated` on initial parse (before the user types anything),
   // which used to trigger an auto-save that could write back a placeholder
@@ -29,17 +30,22 @@ export function PreviewPanel() {
   const lastLoadedRef = useRef<string>("")
 
   useEffect(() => {
-    let cancelled = false
+    const session = loadSessionRef.current
+    session.activate(selectedFile ?? null)
     if (!selectedFile) {
+      session.invalidate()
       setFileContent("")
       lastLoadedRef.current = ""
       return
     }
     if (previewContentPath === selectedFile) {
+      session.discardPendingWrites()
+      session.invalidate()
       lastLoadedRef.current = fileContent
       return
     }
     if (externalPreview?.path === selectedFile) {
+      session.invalidate()
       lastLoadedRef.current = fileContent
       return
     }
@@ -47,34 +53,29 @@ export function PreviewPanel() {
     const category = getFileCategory(selectedFile)
 
     if (isBinary(category) && !isExtractedTextPreviewFile(selectedFile)) {
+      session.invalidate()
       setFileContent("")
       lastLoadedRef.current = ""
       return
     }
 
-    readFile(selectedFile)
-      .then((content) => {
-        if (cancelled) return
-        lastLoadedRef.current = content
-        setFileContent(content)
-      })
-      .catch((err) => {
-        if (cancelled) return
+    void session.load(selectedFile).then(
+      (outcome) => {
+        if (outcome.status !== "applied") return
+        lastLoadedRef.current = outcome.content
+        setFileContent(outcome.content)
+      },
+      (err: unknown) => {
         lastLoadedRef.current = ""
         setFileContent(`Error loading file: ${err}`)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [selectedFile, previewContentPath, externalPreview, setFileContent])
+      },
+    )
+  }, [selectedFile, previewContentPath, previewContentNonce, externalPreview, setFileContent])
 
-  const writeNow = useCallback((path: string, markdown: string, syncStore = false) => {
-    writeFile(path, markdown)
-      .then(() => {
-        lastLoadedRef.current = markdown
-        if (syncStore) setFileContent(markdown)
-      })
-      .catch((err) => console.error("Failed to save:", err))
+  const applyWrite = useCallback((outcome: PreviewFileWriteOutcome) => {
+    if (outcome.status !== "applied") return
+    lastLoadedRef.current = outcome.content
+    setFileContent(outcome.content)
   }, [setFileContent])
 
   const handleSave = useCallback(
@@ -84,22 +85,22 @@ export function PreviewPanel() {
       // when the user has actually changed the content relative to the
       // last disk read.
       if (markdown === lastLoadedRef.current) return
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      const session = loadSessionRef.current
       if (options?.immediate) {
         setFileContent(markdown)
-        writeNow(selectedFile, markdown, true)
+        session.write(selectedFile, markdown)
+          .then(applyWrite)
+          .catch((err) => console.error("Failed to save:", err))
         return
       }
-      saveTimerRef.current = setTimeout(() => {
-        writeNow(selectedFile, markdown, true)
-      }, 1000)
+      session.scheduleWrite(selectedFile, markdown, 1000, applyWrite)
     },
-    [selectedFile, setFileContent, writeNow]
+    [selectedFile, setFileContent, applyWrite]
   )
 
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      loadSessionRef.current.discardPendingWrites()
     }
   }, [])
 
@@ -128,7 +129,7 @@ export function PreviewPanel() {
           </button>
           <span className="truncate text-xs text-muted-foreground" title={selectedFile}>{fileName}</span>
         </div>
-        <button onClick={closePreview} className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent" title={t("common.close")} aria-label={t("common.close")}>
+        <button type="button" onClick={closePreview} className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent" title={t("common.close")} aria-label={t("common.close")}>
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -142,14 +143,14 @@ export function PreviewPanel() {
           />
         ) : category === "markdown" ? (
           <WikiEditor
-            key={selectedFile}
+            key={`${selectedFile}:${previewContentNonce}`}
             content={fileContent}
             onSave={handleSave}
             filePath={selectedFile}
           />
         ) : (
           <FilePreview
-            key={selectedFile}
+            key={`${selectedFile}:${previewContentNonce}`}
             filePath={selectedFile}
             textContent={fileContent}
           />

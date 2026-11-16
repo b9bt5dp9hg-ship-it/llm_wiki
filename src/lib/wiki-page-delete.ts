@@ -20,7 +20,8 @@
  * next file in a batch, or surface to the user via toast).
  */
 import { deleteFile, listDirectory, readFile, writeFile } from "@/commands/fs"
-import { getFileStem, normalizePath } from "@/lib/path-utils"
+import { collapsePathSegments, confineWikiFilePath, getFileStem, normalizePath } from "@/lib/path-utils"
+import { withProjectLock } from "@/lib/project-mutex"
 import { removePageEmbedding, wikiPageIdFromPath } from "@/lib/embedding"
 import {
   buildDeletedKeys,
@@ -45,11 +46,30 @@ import { useReviewStore } from "@/stores/review-store"
  * entities, queries, …) don't own image directories of their own,
  * so the media cascade is scoped to source pages only.
  *
- * Tolerates both `/` and `\` separators for Windows.
+ * Tolerates `/` and `\` separators, and both absolute
+ * (`…/wiki/sources/x.md`) and project-relative (`wiki/sources/x.md`)
+ * paths. Raw source files under `raw/sources/` must not match.
  */
 function isSourcePage(pagePath: string): boolean {
   const normalized = normalizePath(pagePath)
-  return normalized.includes("/wiki/sources/")
+  return normalized.includes("/wiki/sources/") || normalized.startsWith("wiki/sources/")
+}
+
+/**
+ * Resolve a delete target onto a markdown file strictly inside
+ * `<project>/wiki/`. Project-relative `wiki/...` paths are joined at the
+ * project root so they do not become `wiki/wiki/...`.
+ */
+function resolveWikiPageDeletePath(projectPath: string, pagePath: string): string | null {
+  if (typeof pagePath !== "string") return null
+  const trimmed = pagePath.trim()
+  if (!trimmed) return null
+  const project = normalizePath(projectPath).replace(/\/+$/, "")
+  const raw = normalizePath(trimmed)
+  const candidate = raw === "wiki" || raw.startsWith("wiki/")
+    ? `${project}/${raw}`
+    : trimmed
+  return confineWikiFilePath(projectPath, candidate)
 }
 
 /**
@@ -63,19 +83,29 @@ function isSourcePage(pagePath: string): boolean {
  * cascade to the right LanceDB instance, and to locate the media
  * directory).
  *
- * `pagePath` may be absolute or project-relative. Its wiki-relative path is
- * used as the vector identity so same-named pages in different schema
+ * `pagePath` may be absolute or relative. After collapsing `..` it must
+ * resolve to a markdown file inside `<project>/wiki/`; otherwise the
+ * helper throws and does not touch disk. Its wiki-relative path is used
+ * as the vector identity so same-named pages in different schema
  * directories remain independent.
  */
 export async function cascadeDeleteWikiPage(
   projectPath: string,
   pagePath: string,
 ): Promise<void> {
-  await deleteFile(pagePath)
-  const slug = getFileStem(pagePath)
-  const pageId = wikiPageIdFromPath(projectPath, pagePath)
+  const confined = resolveWikiPageDeletePath(projectPath, pagePath)
+  if (!confined) {
+    throw new Error("Wiki page delete path must stay inside the project wiki")
+  }
+  const pp = normalizePath(projectPath)
+  await deleteFile(confined)
+  const slug = getFileStem(confined)
+  // `confined` is proven inside `<project>/wiki/` (case-folded where the
+  // platform requires it), so slice by length rather than by prefix match.
+  const wikiRelative = confined.slice(collapsePathSegments(`${pp}/wiki`).length + 1)
+  const pageId = wikiPageIdFromPath(pp, `wiki/${wikiRelative}`)
   if (pageId.length > 0) {
-    await removePageEmbedding(projectPath, pageId)
+    await removePageEmbedding(pp, pageId)
   }
 
   // Media cascade: source-summary deletion → drop the source's
@@ -92,8 +122,7 @@ export async function cascadeDeleteWikiPage(
   // that resolves to a hidden directory under `wiki/media/`. The
   // worst case (slug == ".") would target `wiki/media/.` and delete
   // the entire media root.
-  if (isSourcePage(pagePath) && slug.length > 0 && !slug.startsWith(".")) {
-    const pp = normalizePath(projectPath)
+  if (isSourcePage(confined) && slug.length > 0 && !slug.startsWith(".")) {
     const mediaDir = `${pp}/wiki/media/${slug}`
     try {
       // delete_file in fs.rs auto-detects directories and uses
@@ -204,15 +233,32 @@ export async function cascadeDeleteWikiPagesWithRefs(
   pagePaths: readonly string[],
 ): Promise<CascadeDeleteResult> {
   const pp = normalizePath(projectPath)
+  return withProjectLock(pp, () => cascadeDeleteWikiPagesWithRefsLocked(pp, pagePaths))
+}
+
+async function cascadeDeleteWikiPagesWithRefsLocked(
+  pp: string,
+  pagePaths: readonly string[],
+): Promise<CascadeDeleteResult> {
   const result: CascadeDeleteResult = {
     deletedPaths: [],
     rewrittenFiles: 0,
   }
 
-  // 1. Read each target's title so the cleanup keyset includes both
-  //    slug-form and title-form. Capture before delete.
-  const infos: DeletedPageInfo[] = []
+  const confinedPaths: string[] = []
+  const seen = new Set<string>()
   for (const pagePath of pagePaths) {
+    const confined = resolveWikiPageDeletePath(pp, pagePath)
+    if (!confined || seen.has(confined)) continue
+    seen.add(confined)
+    confinedPaths.push(confined)
+  }
+
+  // 1. Read each target's title so the cleanup keyset includes both
+  //    slug-form and title-form. Capture before delete. Unconfined
+  //    paths never reach this loop — they must not be read or keyed.
+  const infos: DeletedPageInfo[] = []
+  for (const pagePath of confinedPaths) {
     let title = ""
     try {
       const content = await readFile(pagePath)
@@ -226,7 +272,7 @@ export async function cascadeDeleteWikiPagesWithRefs(
   }
 
   // 2. Delete the target files themselves.
-  for (const pagePath of pagePaths) {
+  for (const pagePath of confinedPaths) {
     try {
       await cascadeDeleteWikiPage(pp, pagePath)
       result.deletedPaths.push(pagePath)

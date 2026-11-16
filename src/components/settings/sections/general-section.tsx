@@ -63,13 +63,19 @@ export function GeneralSection({ draft, setDraft }: Props) {
 
       <div className="space-y-2">
         <Label>{t("settings.sections.general.closeBehavior", { defaultValue: "When closing the window" })}</Label>
-        <div className="grid gap-2">
+        <div
+          className="grid gap-2"
+          role="radiogroup"
+          aria-label={t("settings.sections.general.closeBehavior", { defaultValue: "When closing the window" })}
+        >
           {CLOSE_BEHAVIORS.map((option) => {
             const active = draft.closeBehavior === option.value
             return (
               <button
                 key={option.value}
                 type="button"
+                role="radio"
+                aria-checked={active}
                 onClick={() => setDraft("closeBehavior", option.value)}
                 className={`rounded-md border px-3 py-2 text-left text-sm transition-colors ${
                   active

@@ -1,4 +1,5 @@
 import type { FileNode } from "@/types/wiki"
+import { buildWikiLinkIndex, resolveWikiLink, type WikiLinkIndex } from "./wiki-link-resolver"
 
 export interface ProjectPathIndexEntry {
   name: string
@@ -105,43 +106,28 @@ export function findInTreeByName(
   return null
 }
 
-/**
- * Resolve a `related:` reference to an absolute wiki page path.
- * Accepts three shapes the wiki has historically written:
- *   1. project-relative path:  `wiki/entities/dpao.md`
- *   2. bare filename with .md: `dpao.md`
- *   3. bare slug:              `dpao`
- * Returns the absolute path of an existing file, or null if none
- * matches. Always restricts the lookup to `wiki/` to avoid pulling
- * in a same-named file from `raw/sources/`.
- */
+const wikiLinkIndexes = new WeakMap<ProjectPathIndex, Map<string, WikiLinkIndex>>()
+
+/** Resolve a reader/related reference with the same page rules as the graph. */
 export function resolveRelatedSlug(
   index: ProjectPathIndex,
   ref: string,
   wikiRoot: string,
 ): string | null {
-  const rawTarget = unwrapWikilink(ref.trim()).slug.split("#", 1)[0].trim()
-  if (!rawTarget || /[\u0000-\u001f\u007f]/u.test(rawTarget)) return null
-  const normalizedRef = rawTarget.replace(/\\/g, "/").replace(/^\.\//, "")
-  const normalizedWikiRoot = wikiRoot.replace(/\\/g, "/").replace(/\/$/, "")
-  if (normalizedRef.startsWith("/") || /^[A-Za-z]:\//.test(normalizedRef)) return null
-  const segments = normalizedRef.split("/")
-  if (segments.some((segment) => segment === ".." || segment === "." || !segment)) return null
-
-  // Path-like refs can be project-relative (`wiki/concepts/foo`) or
-  // wiki-root-relative (`concepts/foo`). Index generation uses the latter.
-  if (normalizedRef.includes("/")) {
-    const projectRoot = normalizedWikiRoot.replace(/\/wiki$/, "")
-    const withExtension = normalizedRef.endsWith(".md") ? normalizedRef : `${normalizedRef}.md`
-    const target = withExtension.startsWith("wiki/")
-      ? `${projectRoot}/${withExtension}`
-      : `${normalizedWikiRoot}/${withExtension}`
-    const found = findInTreeByPath(index, target)
-    return found && found.replace(/\\/g, "/").startsWith(`${normalizedWikiRoot}/`) ? found : null
+  // Control characters never name a page; reject them before path lookup.
+  if (/[\u0000-\u001f\u007f]/u.test(ref.trim())) return null
+  let projectIndexes = wikiLinkIndexes.get(index)
+  if (!projectIndexes) {
+    projectIndexes = new Map()
+    wikiLinkIndexes.set(index, projectIndexes)
   }
-
-  const filename = normalizedRef.endsWith(".md") ? normalizedRef : `${normalizedRef}.md`
-  return findInTreeByName(index, filename, `${normalizedWikiRoot}/`)
+  let links = projectIndexes.get(wikiRoot)
+  if (!links) {
+    const paths = Array.from(index.filesByName.values()).flatMap((entries) => entries.map((entry) => entry.path))
+    links = buildWikiLinkIndex(paths, wikiRoot)
+    projectIndexes.set(wikiRoot, links)
+  }
+  return resolveWikiLink(links, ref)?.path ?? null
 }
 
 /**
@@ -198,7 +184,7 @@ function findInTreeByPath(index: ProjectPathIndex, targetPath: string): string |
 }
 
 function normalizeHttpUrl(ref: string): string | null {
-  if (/[\u0000-\u001f\u007f]/u.test(ref)) return null
+  if (/[\u0000-\u001f\u007f]/u.test(ref.trim())) return null
   try {
     const url = new URL(ref)
     if (url.protocol !== "http:" && url.protocol !== "https:") return null

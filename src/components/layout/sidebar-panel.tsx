@@ -14,8 +14,11 @@ export function SidebarPanel({ onCollapse }: SidebarPanelProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex shrink-0 border-b">
+      <div role="tablist" className="flex shrink-0 border-b">
         <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "knowledge"}
           onClick={() => setMode("knowledge")}
           className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
             mode === "knowledge"
@@ -26,6 +29,9 @@ export function SidebarPanel({ onCollapse }: SidebarPanelProps) {
           {t("sidebar.knowledge")}
         </button>
         <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "files"}
           onClick={() => setMode("files")}
           className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
             mode === "files"

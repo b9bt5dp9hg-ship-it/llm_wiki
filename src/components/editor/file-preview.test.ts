@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { clampPdfPage, decodeBase64, parseDelimitedContent } from "./file-preview"
 
@@ -14,6 +15,26 @@ describe("PDF preview helpers", () => {
   })
 })
 
+describe("PDF preview accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function PdfPreview")
+  const end = source.indexOf("const MAX_INLINE_PDF_BYTES", start)
+  const preview = source.slice(start, end)
+
+  it("names both icon-only zoom controls", () => {
+    expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomOut"\)\}/)
+    expect(preview).toMatch(/aria-label=\{t\("settings\.sections\.interface\.zoomIn"\)\}/)
+  })
+
+  it("exposes whether the text view toggle is active", () => {
+    expect(preview).toMatch(/aria-pressed=\{showText\}/)
+  })
+
+  it("announces asynchronous PDF rendering failures", () => {
+    expect(preview).toMatch(/loadError \? \(\s*<div role="alert"/)
+  })
+})
+
 describe("parseDelimitedContent", () => {
   it("preserves delimiters, escaped quotes, and newlines inside quoted cells", () => {
     expect(parseDelimitedContent('name,detail\nA,"one,two"\nB,"line 1\nline 2"\nC,"a""b"', ",")).toEqual([
@@ -22,5 +43,59 @@ describe("parseDelimitedContent", () => {
       ["B", "line 1\nline 2"],
       ["C", 'a"b'],
     ])
+  })
+})
+
+describe("delimited table accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function DelimitedTablePreview")
+  const end = source.indexOf("function HtmlPreview", start)
+  const preview = source.slice(start, end)
+
+  it("gives the table an accessible caption", () => {
+    expect(preview).toMatch(/<caption className="sr-only">\{filePath\}<\/caption>/)
+  })
+})
+
+describe("fullscreen image preview semantics", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function ImagePreview")
+  const end = source.indexOf("function VideoPreview", start)
+  const preview = source.slice(start, end)
+
+  it("exposes a named modal and names every icon-only control", () => {
+    expect(preview).toMatch(/role="dialog"/)
+    expect(preview).toMatch(/aria-modal="true"/)
+    expect(preview).toMatch(/aria-label=\{fileName\}/)
+    expect(preview.match(/aria-label=/g)).toHaveLength(4)
+  })
+
+  it("owns focus, traps Tab, closes on Escape, and restores focus", () => {
+    expect(preview).toMatch(/document\.activeElement/)
+    expect(preview).toMatch(/imageDialogRef\.current\?\.querySelector<HTMLElement>[\s\S]*\.focus\(\)/)
+    expect(preview).toMatch(/trapTabInContainer\(event\.nativeEvent, event\.currentTarget\)/)
+    expect(preview).toMatch(/event\.key === "Escape"[\s\S]*setExpanded\(false\)/)
+    expect(preview).toMatch(/previousFocus\?\.focus\(\)/)
+  })
+})
+
+describe("HTML preview accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function HtmlPreview")
+  const end = source.indexOf("function ImagePreview", start)
+  const preview = source.slice(start, end)
+
+  it("exposes whether source mode is active", () => {
+    expect(preview).toMatch(/aria-pressed=\{showSource\}/)
+  })
+})
+
+describe("binary placeholder accessibility", () => {
+  const source = readFileSync(new URL("./file-preview.tsx", import.meta.url), "utf8")
+  const start = source.indexOf("function BinaryPlaceholder")
+  const preview = source.slice(start)
+
+  it("announces an asynchronous text-decoding failure", () => {
+    expect(preview).toMatch(/loadError && <p role="alert"/)
   })
 })

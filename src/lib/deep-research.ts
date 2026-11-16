@@ -512,12 +512,41 @@ function isActiveProjectPath(projectPath: string): boolean {
   return Boolean(activePath && normalizePath(activePath) === normalizePath(projectPath))
 }
 
+/**
+ * Incremented when leaving a project. Path equality alone is not a session:
+ * A → B → A would otherwise let an in-flight stream resume and write a
+ * query page after the original task was discarded.
+ */
+let researchGeneration = 0
+
+export function snapshotResearchGeneration(): number {
+  return researchGeneration
+}
+
+export function invalidateResearchSession(): void {
+  researchGeneration += 1
+}
+
+export function isCurrentResearchSession(projectPath: string, generation: number): boolean {
+  return generation === researchGeneration && isActiveProjectPath(projectPath)
+}
+
+export function shouldPersistResearchPage(
+  projectPath: string,
+  generation: number,
+  taskId: string,
+): boolean {
+  if (!isCurrentResearchSession(projectPath, generation)) return false
+  return useResearchStore.getState().tasks.some((task) => task.id === taskId)
+}
+
 function updateTaskIfActive(
   projectPath: string,
   taskId: string,
   patch: Parameters<ReturnType<typeof useResearchStore.getState>["updateTask"]>[1],
+  generation: number,
 ): boolean {
-  if (!isActiveProjectPath(projectPath)) return false
+  if (!shouldPersistResearchPage(projectPath, generation, taskId)) return false
   useResearchStore.getState().updateTask(taskId, patch)
   return true
 }
@@ -549,12 +578,13 @@ async function executeResearch(
   searchConfig: SearchApiConfig,
 ) {
   const pp = normalizePath(projectPath)
+  const generation = snapshotResearchGeneration()
 
   try {
-    if (!isActiveProjectPath(pp)) return
+    if (!isCurrentResearchSession(pp, generation)) return
     // Step 1: gather research sources — use multiple queries if available,
     // merge Web Search and local AnyTXT results, then deduplicate.
-    if (!updateTaskIfActive(pp, taskId, { status: "searching" })) return
+    if (!updateTaskIfActive(pp, taskId, { status: "searching" }, generation)) return
 
     const task = useResearchStore.getState().tasks.find((t) => t.id === taskId)
     const queries = task?.searchQueries && task.searchQueries.length > 0
@@ -572,22 +602,22 @@ async function executeResearch(
       { webSearch, anyTxtSearch: anyTxtSearchSmart },
       { llmConfig, researchTopic: topic },
     )
-    if (!isActiveProjectPath(pp)) return
+    if (!isCurrentResearchSession(pp, generation)) return
 
     const webResults = allResults
-    if (!updateTaskIfActive(pp, taskId, { webResults })) return
+    if (!updateTaskIfActive(pp, taskId, { webResults }, generation)) return
 
     if (webResults.length === 0) {
       const patch = candidateCount > 0 && rejectedCount === candidateCount
         ? rejectedResearchSourcesTaskPatch(candidateCount, sourceErrors)
         : noResearchSourcesTaskPatch(sourceErrors)
-      if (!updateTaskIfActive(pp, taskId, patch)) return
-      if (isActiveProjectPath(pp)) onTaskFinished(pp, llmConfig, searchConfig)
+      if (!updateTaskIfActive(pp, taskId, patch, generation)) return
+      if (isCurrentResearchSession(pp, generation)) onTaskFinished(pp, llmConfig, searchConfig)
       return
     }
 
     // Step 2: LLM synthesis
-    if (!updateTaskIfActive(pp, taskId, { status: "synthesizing" })) return
+    if (!updateTaskIfActive(pp, taskId, { status: "synthesizing" }, generation)) return
 
     const searchContext = webResults
       .map((r, i) => `[${i + 1}] **${r.title}** (${r.source})\n${r.snippet}`)
@@ -632,28 +662,27 @@ async function executeResearch(
       ],
       {
         onToken: (token) => {
-          if (!isActiveProjectPath(pp)) return
+          if (!isCurrentResearchSession(pp, generation)) return
           accumulated += token
           // Update synthesis progressively so UI shows real-time text
           useResearchStore.getState().updateTask(taskId, { synthesis: accumulated })
         },
         onDone: () => {},
         onError: (err) => {
-          if (!isActiveProjectPath(pp)) return
-          useResearchStore.getState().updateTask(taskId, {
+          updateTaskIfActive(pp, taskId, {
             status: "error",
             error: err.message,
-          })
+          }, generation)
         },
       },
     )
 
     // Check if errored during streaming
     if (useResearchStore.getState().tasks.find((t) => t.id === taskId)?.status === "error") {
-      if (isActiveProjectPath(pp)) onTaskFinished(pp, llmConfig, searchConfig)
+      if (isCurrentResearchSession(pp, generation)) onTaskFinished(pp, llmConfig, searchConfig)
       return
     }
-    if (!isActiveProjectPath(pp)) return
+    if (!isCurrentResearchSession(pp, generation)) return
 
     // Step 3: Validate before writing. A successful stream can still contain
     // no assistant prose (for example, only a reasoning block). Such output
@@ -664,11 +693,11 @@ async function executeResearch(
         status: "error",
         synthesis: validation.cleaned,
         error: validation.error,
-      })) return
-      if (isActiveProjectPath(pp)) onTaskFinished(pp, llmConfig, searchConfig)
+      }, generation)) return
+      if (isCurrentResearchSession(pp, generation)) onTaskFinished(pp, llmConfig, searchConfig)
       return
     }
-    if (!updateTaskIfActive(pp, taskId, { status: "saving", synthesis: validation.cleaned })) return
+    if (!updateTaskIfActive(pp, taskId, { status: "saving", synthesis: validation.cleaned }, generation)) return
 
     const { fileName, date } = makeDeepResearchFileName(topic)
     const taskFileName = addResearchTaskDiscriminator(fileName, taskId)
@@ -691,15 +720,20 @@ async function executeResearch(
       references,
     )
 
+    if (!shouldPersistResearchPage(pp, generation, taskId)) {
+      if (isCurrentResearchSession(pp, generation)) onTaskFinished(pp, llmConfig, searchConfig)
+      return
+    }
     await writeFile(filePath, pageContent)
     const savedPath = filePath.slice(`${pp}/`.length)
 
     if (!updateTaskIfActive(pp, taskId, {
       status: "done",
       savedPath,
-    })) return
+    }, generation)) return
     resolveReviewForSavedResearch(pp, taskId, savedPath)
 
+    if (!isCurrentResearchSession(pp, generation)) return
     try {
       await refreshProjectFileTree(pp, { bumpDataVersion: true })
     } catch {
@@ -709,6 +743,7 @@ async function executeResearch(
     // The query page no longer goes through source ingest, so index it here
     // directly. This keeps freshly generated research available to hybrid
     // search without recreating the review-amplifying ingest loop.
+    if (!isCurrentResearchSession(pp, generation)) return
     const embeddingConfig = useWikiStore.getState().embeddingConfig
     if (embeddingConfig.enabled && embeddingConfig.model) {
       try {
@@ -734,10 +769,10 @@ async function executeResearch(
     updateTaskIfActive(pp, taskId, {
       status: "error",
       error: message,
-    })
+    }, generation)
   }
 
-  if (isActiveProjectPath(pp)) onTaskFinished(pp, llmConfig, searchConfig)
+  if (isCurrentResearchSession(pp, generation)) onTaskFinished(pp, llmConfig, searchConfig)
 }
 
 function onTaskFinished(

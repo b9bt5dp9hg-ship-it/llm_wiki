@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button"
 import { getRecentProjects, removeFromRecentProjects } from "@/lib/project-store"
 import type { WikiProject } from "@/types/wiki"
 import { useTranslation } from "react-i18next"
+import { namedIconButtonProps, revealOnHoverOrFocusClass, selectRowProps } from "@/components/list-row-a11y"
 
 interface WelcomeScreenProps {
   onCreateProject: () => void
@@ -23,8 +24,7 @@ export function WelcomeScreen({
     getRecentProjects().then(setRecentProjects).catch(() => {})
   }, [])
 
-  async function handleRemoveRecent(e: React.MouseEvent, path: string) {
-    e.stopPropagation()
+  async function handleRemoveRecent(path: string) {
     await removeFromRecentProjects(path)
     const updated = await getRecentProjects()
     setRecentProjects(updated)
@@ -52,39 +52,41 @@ export function WelcomeScreen({
         </div>
 
         {recentProjects.length > 0 && (
-          <div className="w-full max-w-md">
-            <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Clock className="h-3.5 w-3.5" />
+          <section className="w-full max-w-md" aria-labelledby="recent-projects-heading">
+            <h2
+              id="recent-projects-heading"
+              className="mb-2 flex items-center gap-2 text-sm font-normal text-muted-foreground"
+            >
+              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
               {t("welcome.recentProjects")}
-            </div>
-            <div className="rounded-lg border">
+            </h2>
+            <ul className="m-0 list-none rounded-lg border p-0">
               {recentProjects.map((proj) => (
-                <button
+                <li
                   key={proj.path}
-                  onClick={() => onSelectProject(proj)}
-                  className="group flex w-full items-center justify-between border-b px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-accent"
+                  className="group flex items-center justify-between border-b last:border-b-0"
                 >
-                  <div className="min-w-0 flex-1">
+                  <button
+                    {...selectRowProps(false)}
+                    onClick={() => onSelectProject(proj)}
+                    className="min-w-0 flex-1 px-4 py-3 text-left transition-colors hover:bg-accent"
+                  >
                     <div className="truncate text-sm font-medium">{proj.name}</div>
                     <div className="truncate text-xs text-muted-foreground">
                       {proj.path}
                     </div>
-                  </div>
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => handleRemoveRecent(e, proj.path)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleRemoveRecent(e as unknown as React.MouseEvent, proj.path)
-                    }}
-                    className="ml-2 shrink-0 rounded p-1 opacity-0 transition-opacity hover:bg-destructive/10 group-hover:opacity-100"
+                  </button>
+                  <button
+                    {...namedIconButtonProps(t("welcome.removeRecent", { name: proj.name }))}
+                    onClick={() => void handleRemoveRecent(proj.path)}
+                    className={`ml-2 mr-2 shrink-0 rounded p-1 text-muted-foreground hover:bg-destructive/10 ${revealOnHoverOrFocusClass}`}
                   >
-                    <X className="h-3.5 w-3.5 text-muted-foreground" />
-                  </div>
-                </button>
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </li>
               ))}
-            </div>
-          </div>
+            </ul>
+          </section>
         )}
       </div>
     </div>

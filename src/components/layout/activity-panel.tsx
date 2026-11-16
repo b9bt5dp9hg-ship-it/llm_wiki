@@ -30,13 +30,13 @@ import {
   subscribeIngestQueue,
   type IngestTask,
 } from "@/lib/ingest-queue"
-import {
-  ignoreFileChangeTask,
-  rescanProjectFiles,
-  retryFileChangeTask,
-  type FileChangeTask,
-} from "@/commands/file-sync"
+import { type FileChangeTask } from "@/commands/file-sync"
 import { inferWikiTypeFromPath, wikiTypeLabel } from "@/lib/wiki-page-types"
+import {
+  ignoreProjectFileChangeTask,
+  rescanProjectFileSync,
+  retryProjectFileChangeTask,
+} from "@/lib/project-file-sync"
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
   sources: BookOpen,
@@ -89,7 +89,6 @@ export function ActivityPanel() {
   const clearDone = useActivityStore((s) => s.clearDone)
   const project = useWikiStore((s) => s.project)
   const fileSyncTasks = useFileSyncStore((s) => s.tasks)
-  const setFileSyncTasks = useFileSyncStore((s) => s.setTasks)
   const fileSyncError = useFileSyncStore((s) => s.lastError)
   const [expanded, setExpanded] = useState(false)
   const [queueTasks, setQueueTasks] = useState<IngestTask[]>(() => [...getQueue()])
@@ -222,33 +221,30 @@ export function ActivityPanel() {
 
   const handleFileSyncRescan = useCallback(() => {
     if (!project) return
-    rescanProjectFiles(project.id, normalizePath(project.path), useWikiStore.getState().sourceWatchConfig)
-      .then((result) => {
-        setFileSyncTasks(result.queue.tasks)
+    rescanProjectFileSync(project, useWikiStore.getState().sourceWatchConfig)
+      .then(() => {
         useFileSyncStore.getState().setLastError(null)
       })
       .catch((err) => useFileSyncStore.getState().setLastError(String(err)))
-  }, [project, setFileSyncTasks])
+  }, [project])
 
   const handleFileSyncRetry = useCallback((taskId: string) => {
     if (!project) return
-    retryFileChangeTask(project.id, normalizePath(project.path), taskId)
-      .then((queue) => {
-        setFileSyncTasks(queue.tasks)
+    retryProjectFileChangeTask(project, taskId)
+      .then(() => {
         useFileSyncStore.getState().setLastError(null)
       })
       .catch((err) => useFileSyncStore.getState().setLastError(String(err)))
-  }, [project, setFileSyncTasks])
+  }, [project])
 
   const handleFileSyncIgnore = useCallback((taskId: string) => {
     if (!project) return
-    ignoreFileChangeTask(project.id, normalizePath(project.path), taskId)
-      .then((queue) => {
-        setFileSyncTasks(queue.tasks)
+    ignoreProjectFileChangeTask(project, taskId)
+      .then(() => {
         useFileSyncStore.getState().setLastError(null)
       })
       .catch((err) => useFileSyncStore.getState().setLastError(String(err)))
-  }, [project, setFileSyncTasks])
+  }, [project])
 
   // Auto-expand when a new task starts running
   useEffect(() => {
@@ -300,6 +296,8 @@ export function ActivityPanel() {
   return (
     <div className="border-t bg-muted/30">
       <button
+        type="button"
+        aria-expanded={expanded}
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/50"
       >
@@ -310,7 +308,7 @@ export function ActivityPanel() {
         ) : (
           <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" />
         )}
-        <span className="flex-1 truncate text-left">{statusText}</span>
+        <span aria-live="polite" className="flex-1 truncate text-left">{statusText}</span>
         {expanded ? (
           <ChevronDown className="h-3 w-3 shrink-0" />
         ) : (
@@ -437,7 +435,13 @@ export function ActivityPanel() {
                   </button>
                 )}
               </div>
-              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={queueSummary.total}
+                aria-valuenow={queueSummary.completed + queueSummary.failed + queueSummary.cancelled}
+                className="h-1.5 rounded-full bg-muted overflow-hidden"
+              >
                 <div
                   className="h-full rounded-full bg-primary transition-all"
                   style={{ width: `${((queueSummary.completed + queueSummary.failed + queueSummary.cancelled) / Math.max(queueSummary.total, 1)) * 100}%` }}
@@ -551,6 +555,8 @@ function QueueRow({ task, selected, onSelect, onRetry, onCancel, onRemove, onMov
         <div className="flex items-center gap-1 shrink-0">
           {(task.status === "failed" || task.status === "cancelled") && (
             <button
+              type="button"
+              aria-label={t("common.retry")}
               onClick={() => onRetry(task.id)}
               className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               title={t("common.retry")}
@@ -569,16 +575,18 @@ function QueueRow({ task, selected, onSelect, onRetry, onCancel, onRemove, onMov
           )}
           {task.status === "pending" && (
             <>
-              <button onClick={() => onMove(task.id, "up")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveUp")}>
+              <button type="button" aria-label={t("activity.moveUp")} onClick={() => onMove(task.id, "up")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveUp")}>
                 <ArrowUp className="h-3 w-3" />
               </button>
-              <button onClick={() => onMove(task.id, "down")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveDown")}>
+              <button type="button" aria-label={t("activity.moveDown")} onClick={() => onMove(task.id, "down")} className="rounded p-0.5 text-muted-foreground hover:bg-accent" title={t("activity.moveDown")}>
                 <ArrowDown className="h-3 w-3" />
               </button>
             </>
           )}
           {(task.status === "pending" || task.status === "processing") && (
             <button
+              type="button"
+              aria-label={t("common.cancel")}
               onClick={() => onCancel(task.id)}
               className="p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
               title={t("common.cancel")}
@@ -615,6 +623,8 @@ function FileSyncRow({ task, onRetry, onIgnore }: { task: FileChangeTask; onRetr
         {task.status === "failed" && (
           <div className="flex shrink-0 items-center gap-1">
             <button
+              type="button"
+              aria-label={t("common.retry")}
               onClick={() => onRetry(task.id)}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
               title={t("common.retry")}
@@ -622,6 +632,8 @@ function FileSyncRow({ task, onRetry, onIgnore }: { task: FileChangeTask; onRetr
               <RotateCcw className="h-3 w-3" />
             </button>
             <button
+              type="button"
+              aria-label={t("common.ignore")}
               onClick={() => onIgnore(task.id)}
               className="rounded p-0.5 text-muted-foreground hover:bg-destructive/20 hover:text-destructive"
               title={t("common.ignore")}
@@ -663,6 +675,8 @@ function ActivityRow({ item, onCancel }: { item: ActivityItem; onCancel?: () => 
         </div>
         {item.status === "running" && onCancel && (
           <button
+            type="button"
+            aria-label={t("common.cancel")}
             onClick={onCancel}
             className="shrink-0 p-0.5 rounded hover:bg-destructive/20 text-muted-foreground hover:text-destructive"
             title={t("common.cancel")}

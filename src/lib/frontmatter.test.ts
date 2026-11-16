@@ -29,6 +29,24 @@ describe("parseFrontmatter", () => {
     }
   })
 
+  it.each(["\n", "\r\n"])("parses a UTF-8 BOM before frontmatter and preserves the exact roundtrip (%j)", (newline) => {
+    const content = `\uFEFF---${newline}type: query${newline}related: [target]${newline}---${newline}${newline}# Body`
+    const result = parseFrontmatter(content)
+
+    expect(result.frontmatter).toEqual({ type: "query", related: ["target"] })
+    expect(result.body).toBe("# Body")
+    expect(result.rawBlock.startsWith("\uFEFF---")).toBe(true)
+    expect(result.rawBlock + result.body).toBe(content)
+  })
+
+  it("preserves a leading BOM when no frontmatter exists", () => {
+    const content = "\uFEFF# Body\nNo frontmatter"
+    const result = parseFrontmatter(content)
+    expect(result.frontmatter).toBeNull()
+    expect(result.rawBlock).toBe("")
+    expect(result.body).toBe(content)
+  })
+
   it("documents that recovered fallback frontmatter may be lossy", () => {
     const content = "```yaml\n---\ntitle: Fixed\n---\n```\n\n# Body"
     const r = parseFrontmatter(content)

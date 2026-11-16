@@ -1,5 +1,146 @@
-import { describe, expect, it } from "vitest"
-import { __projectStoreTest } from "./project-store"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
+
+const { memory, save, getHooks } = vi.hoisted(() => {
+  const memory = new Map<string, unknown>()
+  const save = vi.fn(async () => {})
+  const getHooks = {
+    afterRecentSnapshot: undefined as undefined | (() => Promise<void>),
+    afterOutputLanguageSnapshot: undefined as undefined | (() => Promise<void>),
+    afterFileSyncSnapshot: undefined as undefined | (() => Promise<void>),
+    afterSourceWatchSnapshot: undefined as undefined | (() => Promise<void>),
+    beforeLastProjectSet: undefined as undefined | (() => Promise<void>),
+  }
+  return { memory, save, getHooks }
+})
+
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(async () => ({
+    async get(key: string) {
+      const value = memory.get(key)
+      if (key === "recentProjects" && getHooks.afterRecentSnapshot) {
+        await getHooks.afterRecentSnapshot()
+      }
+      if (key === "projectOutputLanguages" && getHooks.afterOutputLanguageSnapshot) {
+        await getHooks.afterOutputLanguageSnapshot()
+      }
+      if (key === "projectFileSyncEnabled" && getHooks.afterFileSyncSnapshot) {
+        await getHooks.afterFileSyncSnapshot()
+      }
+      if (key === "sourceWatchConfig" && getHooks.afterSourceWatchSnapshot) {
+        await getHooks.afterSourceWatchSnapshot()
+      }
+      return value
+    },
+    async set(key: string, value: unknown) {
+      if (key === "lastProject" && getHooks.beforeLastProjectSet) {
+        await getHooks.beforeLastProjectSet()
+      }
+      memory.set(key, value)
+    },
+    async delete(key: string) {
+      memory.delete(key)
+    },
+    save,
+  })),
+}))
+
+import {
+  __projectStoreTest,
+  addToRecentProjects,
+  getLastProject,
+  getRecentProjects,
+  loadOutputLanguage,
+  loadProjectFileSyncEnabled,
+  loadSourceWatchConfig,
+  removeFromRecentProjects,
+  saveCustomLlmPresets,
+  saveLanguage,
+  saveOutputLanguage,
+  saveLastProject,
+  saveProjectLlmOverride,
+  saveProjectFileSyncEnabled,
+  saveSourceWatchConfig,
+  saveTheme,
+  saveUpdateCheckState,
+} from "./project-store"
+import { normalizeSourceWatchConfig } from "./source-watch-config"
+
+const KEEP = { id: "keep-id", name: "Keep", path: "/tmp/keep-wiki" }
+const GONE = { id: "gone-id", name: "Gone", path: "/tmp/gone-wiki" }
+
+describe("project LLM override durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves a project model override before returning", async () => {
+    await saveProjectLlmOverride("project-a", {
+      enabled: true,
+      presetId: null,
+      model: "model-a",
+    })
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("custom LLM preset durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves custom presets before returning", async () => {
+    await saveCustomLlmPresets([{ id: "custom-one", label: "Gateway" }])
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("update-check state durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves update-check state before returning", async () => {
+    await saveUpdateCheckState({
+      enabled: true,
+      lastCheckedAt: 123,
+      dismissedVersion: "1.2.3",
+    })
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("interface language durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves the interface language before returning", async () => {
+    await saveLanguage("de")
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("theme durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+  })
+
+  it("force-saves the theme before returning", async () => {
+    await saveTheme("dark")
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe("project-store MinerU config normalization", () => {
   it("preserves valid MinerU config values", () => {
@@ -96,5 +237,247 @@ describe("project-store custom LLM preset normalization", () => {
       { id: "custom-one", label: "Team Gateway" },
       { id: "custom-two", label: "x".repeat(80) },
     ])
+  })
+})
+
+describe("removeFromRecentProjects durability", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+    getHooks.afterRecentSnapshot = undefined
+    getHooks.beforeLastProjectSet = undefined
+    memory.set("recentProjects", [GONE, KEEP])
+    memory.set("lastProject", GONE)
+  })
+
+  it("flushes the removal to disk instead of relying on the 100ms autoSave debounce", async () => {
+    await removeFromRecentProjects(GONE.path)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toBeNull()
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("still force-saves when lastProject already points elsewhere", async () => {
+    memory.set("lastProject", KEEP)
+
+    await removeFromRecentProjects(GONE.path)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toEqual(KEEP)
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("removes the same project through a trailing-slash path spelling", async () => {
+    await removeFromRecentProjects(`${GONE.path}/`)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(await getLastProject()).toBeNull()
+  })
+
+  it("does not restore a removed project when two removals overlap on a stale snapshot", async () => {
+    const ALSO = { id: "also-id", name: "Also", path: "/tmp/also-wiki" }
+    memory.set("recentProjects", [GONE, ALSO, KEEP])
+    memory.set("lastProject", KEEP)
+
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let recentGets = 0
+    getHooks.afterRecentSnapshot = async () => {
+      recentGets += 1
+      if (recentGets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = removeFromRecentProjects(GONE.path)
+    await firstGetStarted.promise
+    const second = removeFromRecentProjects(ALSO.path)
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterRecentSnapshot = undefined
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+  })
+})
+
+describe("recent-project addition serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+    getHooks.afterRecentSnapshot = undefined
+  })
+
+  it("force-saves a newly opened project before returning", async () => {
+    await addToRecentProjects(KEEP)
+
+    expect(await getRecentProjects()).toEqual([KEEP])
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("deduplicates equivalent project paths with trailing separators", async () => {
+    memory.set("recentProjects", [KEEP])
+    const reopened = { ...KEEP, name: "Keep reopened", path: `${KEEP.path}/` }
+
+    await addToRecentProjects(reopened)
+
+    expect(await getRecentProjects()).toEqual([reopened])
+  })
+
+  it("does not lose a project when two additions overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let recentGets = 0
+    getHooks.afterRecentSnapshot = async () => {
+      recentGets += 1
+      if (recentGets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = addToRecentProjects(GONE)
+    await firstGetStarted.promise
+    const second = addToRecentProjects(KEEP)
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterRecentSnapshot = undefined
+
+    expect(await getRecentProjects()).toEqual([KEEP, GONE])
+  })
+
+  it("keeps the newest last-project pointer when two opens overlap", async () => {
+    const firstSetStarted = createDeferred<void>()
+    const releaseFirstSet = createDeferred<void>()
+    let sets = 0
+    getHooks.beforeLastProjectSet = async () => {
+      sets += 1
+      if (sets === 1) {
+        firstSetStarted.resolve()
+        await releaseFirstSet.promise
+      }
+    }
+
+    const first = saveLastProject(GONE)
+    await firstSetStarted.promise
+    const second = saveLastProject(KEEP)
+    await flushMicrotasks()
+    releaseFirstSet.resolve()
+    await Promise.all([first, second])
+    getHooks.beforeLastProjectSet = undefined
+
+    expect(await getLastProject()).toEqual(KEEP)
+    expect(await getRecentProjects()).toEqual([KEEP, GONE])
+  })
+})
+
+describe("project output-language write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+    getHooks.afterOutputLanguageSnapshot = undefined
+  })
+
+  it("force-saves the selected language before returning", async () => {
+    await saveOutputLanguage("German", "project-a")
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not lose another project's language when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterOutputLanguageSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = saveOutputLanguage("English", "project-a")
+    await firstGetStarted.promise
+    const second = saveOutputLanguage("Chinese", "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterOutputLanguageSnapshot = undefined
+
+    await expect(loadOutputLanguage("project-a")).resolves.toBe("English")
+    await expect(loadOutputLanguage("project-b")).resolves.toBe("Chinese")
+  })
+})
+
+describe("project file-sync write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    save.mockClear()
+    getHooks.afterFileSyncSnapshot = undefined
+  })
+
+  it("force-saves the watcher toggle before returning", async () => {
+    await saveProjectFileSyncEnabled(false, "project-a")
+
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not lose another project's setting when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterFileSyncSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+
+    const first = saveProjectFileSyncEnabled(false, "project-a")
+    await firstGetStarted.promise
+    const second = saveProjectFileSyncEnabled(false, "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterFileSyncSnapshot = undefined
+
+    await expect(loadProjectFileSyncEnabled("project-a")).resolves.toBe(false)
+    await expect(loadProjectFileSyncEnabled("project-b")).resolves.toBe(false)
+  })
+})
+
+describe("project source-watch write serialization", () => {
+  beforeEach(() => {
+    memory.clear()
+    getHooks.afterSourceWatchSnapshot = undefined
+  })
+
+  it("does not lose another project's watcher config when two saves overlap", async () => {
+    const firstGetStarted = createDeferred<void>()
+    const releaseFirstGet = createDeferred<void>()
+    let gets = 0
+    getHooks.afterSourceWatchSnapshot = async () => {
+      gets += 1
+      if (gets === 1) {
+        firstGetStarted.resolve()
+        await releaseFirstGet.promise
+      }
+    }
+    const disabled = normalizeSourceWatchConfig({ enabled: false })
+
+    const first = saveSourceWatchConfig(disabled, "project-a")
+    await firstGetStarted.promise
+    const second = saveSourceWatchConfig(disabled, "project-b")
+    await flushMicrotasks()
+    releaseFirstGet.resolve()
+    await Promise.all([first, second])
+    getHooks.afterSourceWatchSnapshot = undefined
+
+    await expect(loadSourceWatchConfig("project-a")).resolves.toMatchObject({ enabled: false })
+    await expect(loadSourceWatchConfig("project-b")).resolves.toMatchObject({ enabled: false })
   })
 })

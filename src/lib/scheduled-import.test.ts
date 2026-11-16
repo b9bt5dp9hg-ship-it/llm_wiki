@@ -3,6 +3,7 @@ import type { WikiProject } from "@/types/wiki"
 
 const mocks = vi.hoisted(() => ({
   copyFile: vi.fn(),
+  deleteFile: vi.fn(),
   fileExists: vi.fn(),
   getFileMd5: vi.fn(),
   getFileModifiedTime: vi.fn(),
@@ -25,6 +26,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/commands/fs", () => ({
   copyFile: mocks.copyFile,
+  deleteFile: mocks.deleteFile,
   fileExists: mocks.fileExists,
   getFileMd5: mocks.getFileMd5,
   getFileModifiedTime: mocks.getFileModifiedTime,
@@ -62,8 +64,11 @@ import {
   isScheduledImportDue,
   shouldSkipScheduledImportConfigFile,
   shouldSkipScheduledImportFile,
+  stopScheduledImport,
+  __resetScheduledImportForTesting,
 } from "./scheduled-import"
 import { useWikiStore } from "@/stores/wiki-store"
+import { createDeferred, flushMicrotasks } from "@/test-helpers/deferred"
 
 describe("scheduled import path handling", () => {
   const projectPath = "/Users/me/wiki-project"
@@ -231,6 +236,8 @@ describe("scanAndImport failure handling", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    __resetScheduledImportForTesting()
+    mocks.deleteFile.mockResolvedValue(undefined)
     useWikiStore.setState({
       project,
       sourceWatchConfig: {
@@ -301,6 +308,24 @@ describe("scanAndImport failure handling", () => {
 
     expect(mocks.copyFile).toHaveBeenCalled()
     expect(mocks.enqueueSourceIngest).toHaveBeenCalled()
+    expect(mocks.writeFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it("does not leave an untracked mirror when stop interrupts a copy", async () => {
+    const copy = createDeferred<void>()
+    mocks.copyFile.mockImplementation(() => copy.promise)
+    mocks.enqueueSourceIngest.mockResolvedValue(["task-1"])
+    const destination = "/Users/me/wiki-project/raw/sources/scheduled-import/paper.pdf"
+
+    const scan = scanAndImport(project, "/Users/me/inbox", { runId: 0 })
+    await flushMicrotasks()
+    expect(mocks.copyFile).toHaveBeenCalledWith("/Users/me/inbox/paper.pdf", destination)
+    stopScheduledImport()
+    copy.resolve()
+    await scan
+
+    expect(mocks.deleteFile).toHaveBeenCalledWith(destination)
+    expect(mocks.enqueueSourceIngest).not.toHaveBeenCalled()
     expect(mocks.writeFileAtomic).not.toHaveBeenCalled()
   })
 
