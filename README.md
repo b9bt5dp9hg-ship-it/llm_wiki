@@ -417,6 +417,8 @@ npm run tauri dev      # Development
 npm run tauri build    # Production build
 ```
 
+Local macOS install: `scripts/install-macos-app.sh` copies the built app to `/Applications` and signs it with your "Apple Development" certificate. Without that, the ad-hoc signature changes on every build and macOS silently drops Full Disk Access.
+
 ### Chrome Extension
 
 1. Open `chrome://extensions`
